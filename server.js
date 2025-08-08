@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const { Client } = require('pg');
+const { Pool } = require('pg'); // Change from Client to Pool
 const cors = require('cors');
 
 const app = express();
@@ -10,26 +10,34 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Database connection
-const client = new Client({
+// Database connection pool (instead of single client)
+const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: {
+    rejectUnauthorized: false
+  },
+  max: 20, // maximum number of clients in pool
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
-// Connect to database
-client.connect()
-  .then(() => console.log('✅ Connected to Neon PostgreSQL'))
-  .catch(err => console.error('❌ Database connection error:', err));
+// Test connection
+pool.on('connect', () => {
+  console.log('✅ Connected to Neon PostgreSQL');
+});
 
-// API Routes
+pool.on('error', (err) => {
+  console.error('❌ Unexpected error on idle client', err);
+  process.exit(-1);
+});
 
-// Get all trips (with optional pagination)
+// Update all your routes to use pool.query instead of client.query
 app.get('/api/trips', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
     const offset = parseInt(req.query.offset) || 0;
     
-    const result = await client.query(
+    const result = await pool.query( // Changed from client.query
       'SELECT * FROM trips ORDER BY departure_time LIMIT $1 OFFSET $2',
       [limit, offset]
     );
@@ -46,10 +54,10 @@ app.get('/api/trips', async (req, res) => {
   }
 });
 
-// Get all trips without pagination (for your React app)
+// Update ALL your other routes to use pool.query
 app.get('/api/trips/all', async (req, res) => {
   try {
-    const result = await client.query('SELECT * FROM trips ORDER BY departure_time');
+    const result = await pool.query('SELECT * FROM trips ORDER BY departure_time');
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching all trips:', error);
@@ -57,91 +65,21 @@ app.get('/api/trips/all', async (req, res) => {
   }
 });
 
-// Get trips by origin
-app.get('/api/trips/from/:origin', async (req, res) => {
-  try {
-    const { origin } = req.params;
-    const result = await client.query(
-      'SELECT * FROM trips WHERE LOWER(origin) = LOWER($1) ORDER BY departure_time',
-      [origin]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching trips by origin:', error);
-    res.status(500).json({ error: 'Failed to fetch trips' });
-  }
-});
-
-// Get trips by destination
-app.get('/api/trips/to/:destination', async (req, res) => {
-  try {
-    const { destination } = req.params;
-    const result = await client.query(
-      'SELECT * FROM trips WHERE LOWER(destination) = LOWER($1) ORDER BY departure_time',
-      [destination]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching trips by destination:', error);
-    res.status(500).json({ error: 'Failed to fetch trips' });
-  }
-});
-
-// Search trips by route
-app.get('/api/trips/route/:from/:to', async (req, res) => {
-  try {
-    const { from, to } = req.params;
-    const result = await client.query(
-      'SELECT * FROM trips WHERE LOWER(origin) = LOWER($1) AND LOWER(destination) = LOWER($2) ORDER BY departure_time',
-      [from, to]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching trips by route:', error);
-    res.status(500).json({ error: 'Failed to fetch trips' });
-  }
-});
-
-// Get trip statistics
-app.get('/api/stats', async (req, res) => {
-  try {
-    const totalTrips = await client.query('SELECT COUNT(*) FROM trips');
-    const uniqueOrigins = await client.query('SELECT COUNT(DISTINCT origin) FROM trips');
-    const uniqueDestinations = await client.query('SELECT COUNT(DISTINCT destination) FROM trips');
-    const avgPrice = await client.query('SELECT AVG(price_thb) FROM trips WHERE price_thb IS NOT NULL');
-    
-    res.json({
-      totalTrips: parseInt(totalTrips.rows[0].count),
-      uniqueOrigins: parseInt(uniqueOrigins.rows[0].count),
-      uniqueDestinations: parseInt(uniqueDestinations.rows[0].count),
-      averagePrice: parseFloat(avgPrice.rows[0].avg).toFixed(2)
-    });
-  } catch (error) {
-    console.error('Error fetching statistics:', error);
-    res.status(500).json({ error: 'Failed to fetch statistics' });
-  }
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Server is running' });
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-  console.log(`📊 API endpoints available:`);
-  console.log(`   GET /api/trips/all - Get all trips`);
-  console.log(`   GET /api/trips?limit=50&offset=0 - Get paginated trips`);
-  console.log(`   GET /api/trips/from/:origin - Get trips by origin`);
-  console.log(`   GET /api/trips/to/:destination - Get trips by destination`);
-  console.log(`   GET /api/trips/route/:from/:to - Get trips by route`);
-  console.log(`   GET /api/stats - Get database statistics`);
-});
+// Continue with all your other routes using pool.query...
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down server...');
-  await client.end();
+  await pool.end();
   process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('🛑 SIGTERM received, shutting down gracefully...');
+  await pool.end();
+  process.exit(0);
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Backend server running on port ${PORT}`);
 });
