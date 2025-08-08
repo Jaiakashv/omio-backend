@@ -162,10 +162,10 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Fetch all unique origins
+// Fetch all unique origins (from)
 app.get('/api/origins', async (req, res) => {
   try {
-    const result = await pool.query('SELECT DISTINCT origin FROM trips ORDER BY origin ASC');
+    const result = await pool.query('SELECT DISTINCT "from" as origin FROM trips ORDER BY "from" ASC');
     const origins = result.rows.map(row => row.origin);
     res.json(origins);
   } catch (error) {
@@ -174,10 +174,10 @@ app.get('/api/origins', async (req, res) => {
   }
 });
 
-// Fetch all unique destinations
+// Fetch all unique destinations (to)
 app.get('/api/destinations', async (req, res) => {
   try {
-    const result = await pool.query('SELECT DISTINCT destination FROM trips ORDER BY destination ASC');
+    const result = await pool.query('SELECT DISTINCT "to" as destination FROM trips ORDER BY "to" ASC');
     const destinations = result.rows.map(row => row.destination);
     res.json(destinations);
   } catch (error) {
