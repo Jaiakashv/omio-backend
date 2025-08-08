@@ -162,27 +162,27 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Fetch all unique origins (from)
+// Fetch all unique origins
 app.get('/api/origins', async (req, res) => {
   try {
-    const result = await pool.query('SELECT DISTINCT "from" as origin FROM trips ORDER BY "from" ASC');
+    const result = await pool.query('SELECT DISTINCT origin FROM trips ORDER BY origin ASC');
     const origins = result.rows.map(row => row.origin);
     res.json(origins);
   } catch (error) {
     console.error('Error fetching origins:', error);
-    res.status(500).json({ error: 'Failed to fetch origins' });
+    res.status(500).json({ error: 'Failed to fetch origins', details: error.message });
   }
 });
 
-// Fetch all unique destinations (to)
+// Fetch all unique destinations
 app.get('/api/destinations', async (req, res) => {
   try {
-    const result = await pool.query('SELECT DISTINCT "to" as destination FROM trips ORDER BY "to" ASC');
+    const result = await pool.query('SELECT DISTINCT destination FROM trips ORDER BY destination ASC');
     const destinations = result.rows.map(row => row.destination);
     res.json(destinations);
   } catch (error) {
     console.error('Error fetching destinations:', error);
-    res.status(500).json({ error: 'Failed to fetch destinations' });
+    res.status(500).json({ error: 'Failed to fetch destinations', details: error.message });
   }
 });
 
