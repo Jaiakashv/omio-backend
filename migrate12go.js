@@ -22,6 +22,33 @@ const { Client } = require('pg');
   console.log(`Importing ${validTrips.length} valid records`);
   console.log(`Skipping ${trips.length - validTrips.length} records with missing data`);
 
+  // Helpers
+  const parseDurationMinutes = (v) => {
+    if (v === undefined || v === null) return null;
+    const s = String(v).toLowerCase().trim();
+    let total = 0;
+    // Match formats like "5h 30m", "5h", "30m"
+    const h = s.match(/(\d+)\s*h/);
+    const m = s.match(/(\d+)\s*m/);
+    if (h) total += parseInt(h[1], 10) * 60;
+    if (m) total += parseInt(m[1], 10);
+    if (total > 0) return total;
+    // Fallback: formats like "5:30"
+    const hm = s.match(/^(\d{1,2}):(\d{2})$/);
+    if (hm) {
+      return parseInt(hm[1], 10) * 60 + parseInt(hm[2], 10);
+    }
+    // Fallback: plain number meaning minutes
+    const num = parseInt(s, 10);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const parsePriceNumber = (v) => {
+    if (v === undefined || v === null) return null;
+    const num = parseFloat(String(v).replace(/[,\s]/g, ''));
+    return Number.isFinite(num) ? num : null;
+  };
+
   // Batch insert for speed
   const BATCH_SIZE = 100;
   let imported = 0;
@@ -37,8 +64,8 @@ const { Client } = require('pg');
     const params = batch.flatMap(t => [
       t.route_url, t.Title, t.From, t.To,
       t["Departure Time"], t["Arrival Time"], 
-      t["Transport Type"], t.Duration, 
-      parseFloat(t.Price), t.Date, t.Operator, t.provider
+      t["Transport Type"], parseDurationMinutes(t.Duration), 
+      parsePriceNumber(t.Price), t.Date, t.Operator, t.provider
     ]);
     
     await client.query(`
