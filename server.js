@@ -2,12 +2,26 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const dotenv = require('dotenv');
+const { Redis } = require('@upstash/redis');
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+// Create Upstash Redis client
+const redisClient = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+// Test Redis connection
+redisClient.ping()
+  .then(() => console.log('✅ Connected to Upstash Redis'))
+  .catch(err => console.error('❌ Failed to connect to Upstash Redis:', err));
+
+
 
 // PostgreSQL pool using DATABASE_URL from .env
 const pool = new Pool({
@@ -32,8 +46,46 @@ app.get('/', (req, res) => {
   res.send('API is running');
 });
 
+// Cache middleware for Upstash Redis
+const cache = (key, ttl = 3600) => {
+  return async (req, res, next) => {
+    const cacheKey = key || req.originalUrl;
+    
+    try {
+      // Try to get cached data
+      const cachedData = await redisClient.get(cacheKey);
+      
+      if (cachedData !== null) {
+        console.log('Cache hit for:', cacheKey);
+        return res.json(JSON.parse(cachedData));
+      }
+      
+      // Override res.json to cache the response
+      const originalJson = res.json.bind(res);
+      res.json = async (body) => {
+        if (res.statusCode === 200) {
+          try {
+            // Upstash Redis uses EXPIRE for TTL
+            await redisClient.set(cacheKey, JSON.stringify(body));
+            await redisClient.expire(cacheKey, ttl);
+            console.log('Cached response for:', cacheKey, 'TTL:', ttl, 'seconds');
+          } catch (cacheErr) {
+            console.error('Error caching response:', cacheErr);
+          }
+        }
+        return originalJson(body);
+      };
+      
+      next();
+    } catch (err) {
+      console.error('Cache middleware error:', err);
+      next();
+    }
+  };
+};
+
 // Get all trips
-app.get('/api/trips/all', async (req, res) => {
+app.get('/api/trips/all', cache('all_trips'), async (req, res, next) => {
   try {
     const result = await pool.query('SELECT * FROM trips');
     res.json(result.rows);
@@ -44,7 +96,7 @@ app.get('/api/trips/all', async (req, res) => {
 });
 
 // Get paginated trips
-app.get('/api/trips', async (req, res) => {
+app.get('/api/trips', cache(), async (req, res) => {
   const { limit = 50, offset = 0 } = req.query;
   
   try {
@@ -71,7 +123,7 @@ app.get('/api/trips', async (req, res) => {
 });
 
 // Get trips by origin
-app.get('/api/trips/from/:origin', async (req, res) => {
+app.get('/api/trips/from/:origin', cache(), async (req, res) => {
   const { origin } = req.params;
   
   try {
@@ -90,7 +142,7 @@ app.get('/api/trips/from/:origin', async (req, res) => {
 });
 
 // Get trips by destination
-app.get('/api/trips/to/:destination', async (req, res) => {
+app.get('/api/trips/to/:destination', cache(), async (req, res) => {
   const { destination } = req.params;
   
   try {
@@ -109,7 +161,7 @@ app.get('/api/trips/to/:destination', async (req, res) => {
 });
 
 // Get trips by route (origin to destination)
-app.get('/api/trips/route/:from/:to', async (req, res) => {
+app.get('/api/trips/route/:from/:to', cache(), async (req, res) => {
   const { from, to } = req.params;
   
   try {
@@ -130,7 +182,7 @@ app.get('/api/trips/route/:from/:to', async (req, res) => {
 });
 
 // Get database statistics
-app.get('/api/stats', async (req, res) => {
+app.get('/api/stats', cache('stats', 600), async (req, res) => {
   try {
     const [
       totalTrips,
@@ -163,7 +215,7 @@ app.get('/api/stats', async (req, res) => {
 });
 
 // Fetch all unique origins
-app.get('/api/origins', async (req, res) => {
+app.get('/api/origins', cache('origins', 86400), async (req, res) => {
   try {
     const result = await pool.query('SELECT DISTINCT origin FROM trips ORDER BY origin ASC');
     const origins = result.rows.map(row => row.origin);
@@ -175,7 +227,7 @@ app.get('/api/origins', async (req, res) => {
 });
 
 // Fetch all unique destinations
-app.get('/api/destinations', async (req, res) => {
+app.get('/api/destinations', cache('destinations', 86400), async (req, res) => {
   try {
     const result = await pool.query('SELECT DISTINCT destination FROM trips ORDER BY destination ASC');
     const destinations = result.rows.map(row => row.destination);
@@ -184,6 +236,13 @@ app.get('/api/destinations', async (req, res) => {
     console.error('Error fetching destinations:', error);
     res.status(500).json({ error: 'Failed to fetch destinations', details: error.message });
   }
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('Shutting down server...');
+  await redisClient.quit();
+  process.exit(0);
 });
 
 // Start server
