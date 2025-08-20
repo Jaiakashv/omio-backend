@@ -42,20 +42,39 @@ let cacheStats = {
   lastEviction: null
 };
 
+// Safe stringify function for cache keys and values
+const safeStringify = (obj) => {
+  try {
+    return typeof obj === 'string' ? obj : JSON.stringify(obj);
+  } catch (e) {
+    console.error('Error stringifying cache value:', e);
+    return 'error';
+  }
+};
+
+// Safe size calculation
+const calculateSize = (value, key) => {
+  try {
+    const keyStr = safeStringify(key);
+    const valueStr = safeStringify(value);
+    return Buffer.byteLength(valueStr) + Buffer.byteLength(keyStr);
+  } catch (e) {
+    console.error('Error calculating cache size:', e);
+    return 0;
+  }
+};
+
 // Initialize LRU cache with better memory management
 const lruCache = new LRUCache({
   max: MAX_CACHE_ITEMS,
   maxSize: MAX_CACHE_SIZE,
-  sizeCalculation: (value, key) => {
-    const size = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(key);
-    return size;
-  },
+  sizeCalculation: (value, key) => calculateSize(value, key),
   ttl: CACHE_DURATION,
   noDisposeOnSet: true,
   dispose: (key, value) => {
     cacheStats.evictions++;
     cacheStats.lastEviction = new Date().toISOString();
-    const size = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(key);
+    const size = calculateSize(value, key);
     cacheStats.currentSize = Math.max(0, cacheStats.currentSize - size);
     console.log(`🚮 Cache evicted: ${key}, size: ${(size / 1024).toFixed(2)}KB`);
   },
@@ -80,24 +99,31 @@ app.get('/api/cache-stats', (req, res) => {
 
 // Helper function to safely get from cache
 function getFromCache(key) {
-  const value = lruCache.get(key);
-  if (value !== undefined) {
-    cacheStats.hits++;
-    console.log(`✅ Cache hit: ${key}`);
-  } else {
-    cacheStats.misses++;
-    console.log(`❌ Cache miss: ${key}`);
+  try {
+    const cacheKey = safeStringify(key);
+    const value = lruCache.get(cacheKey);
+    if (value !== undefined) {
+      cacheStats.hits++;
+      console.log(`✅ Cache hit: ${cacheKey}`);
+    } else {
+      cacheStats.misses++;
+      console.log(`❌ Cache miss: ${cacheKey}`);
+    }
+    return value;
+  } catch (error) {
+    console.error('Error getting from cache:', error);
+    return undefined;
   }
-  return value;
 }
 
 // Helper function to safely set in cache
 function setInCache(key, value) {
   try {
-    const size = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(key);
+    const cacheKey = safeStringify(key);
+    const size = calculateSize(value, cacheKey);
     cacheStats.currentSize += size;
-    lruCache.set(key, value);
-    console.log(`💾 Cached: ${key}, size: ${(size / 1024).toFixed(2)}KB`);
+    lruCache.set(cacheKey, value);
+    console.log(`💾 Cached: ${cacheKey}, size: ${(size / 1024).toFixed(2)}KB`);
   } catch (error) {
     console.error('Error setting cache:', error);
     // Force garbage collection in case of memory pressure
