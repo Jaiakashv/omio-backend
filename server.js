@@ -389,7 +389,7 @@ async function safeQuery(query, params = []) {
   }
 }
 
-// Get route statistics with parameter-based caching
+// Get route statistics with optimized memory usage
 app.get('/api/stats/routes', async (req, res) => {
   // Create cache key based on query parameters
   const cacheKey = `routeStats:${JSON.stringify({
@@ -407,155 +407,99 @@ app.get('/api/stats/routes', async (req, res) => {
     }
     res.setHeader('Cache-Status', 'MISS');
 
-    // Process in chunks to avoid memory spikes
-    const processInChunks = async () => {
-      const chunkSize = 10000;
-      let offset = 0;
-      let hasMore = true;
-      let stats = {
-        totalRoutes: 0,
-        uniqueProviders: new Set(),
-        prices: [],
-        transportTypes: new Set(),
-        providers: new Map()
-      };
-
-      // Build base query
-      let query = `
-        SELECT 
-          origin, 
-          destination, 
-          price_inr, 
-          operator_name, 
-          transport_type,
-          provider
-        FROM trips 
-      `;
-      
-      const queryParams = [];
-      const conditions = [];
-      
-      // Add filters based on query parameters
-      if (req.query.from) {
-        conditions.push(`origin = $${queryParams.length + 1}`);
-        queryParams.push(req.query.from);
-      }
-      
-      if (req.query.to) {
-        conditions.push(`destination = $${queryParams.length + 1}`);
-        queryParams.push(req.query.to);
-      }
-      
-      if (req.query.transportType) {
-        conditions.push(`transport_type = $${queryParams.length + 1}`);
-        queryParams.push(req.query.transportType);
-      }
-      
-      // Add WHERE clause if there are conditions
-      if (conditions.length > 0) {
-        query += ' WHERE ' + conditions.join(' AND ');
-      }
-      
-      // Add ordering and pagination
-      query += ` ORDER BY id LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
-      
-      // Process data in chunks
-      while (hasMore) {
-        const chunk = await pool.query(
-          query,
-          [...queryParams, chunkSize, offset]
-        );
-
-        if (chunk.rows.length === 0) {
-          hasMore = false;
-          break;
-        }
-
-        // Process chunk
-        for (const row of chunk.rows) {
-          // Track unique routes
-          const routeKey = `${row.origin}|${row.destination}`;
-          if (!stats.routes) stats.routes = new Set();
-          stats.routes.add(routeKey);
-
-          // Track unique providers
-          if (row.operator_name) {
-            stats.uniqueProviders.add(row.operator_name);
-          }
-
-          // Track prices for calculations
-          if (row.price_inr) {
-            stats.prices.push(Number(row.price_inr));
-          }
-
-          // Track transport types
-          if (row.transport_type) {
-            stats.transportTypes.add(row.transport_type);
-          }
-
-          // Track cheapest provider
-          if (row.provider && row.price_inr) {
-            const current = stats.providers.get(row.provider) || { minPrice: Infinity };
-            if (row.price_inr < current.minPrice) {
-              stats.providers.set(row.provider, {
-                minPrice: row.price_inr,
-                price: row.price_inr
-              });
-            }
-          }
-        }
-
-        offset += chunkSize;
+    // Use a more memory-efficient approach with aggregation in the database
+    const getStats = async () => {
+      try {
+        // Build base query parts
+        const queryParams = [];
+        const conditions = [];
         
-        // Force garbage collection every 10 chunks
-        if (offset % (chunkSize * 10) === 0 && global.gc) {
-          console.log('Running garbage collection...');
-          global.gc();
+        // Add filters based on query parameters
+        if (req.query.from) {
+          conditions.push(`origin = $${queryParams.length + 1}`);
+          queryParams.push(req.query.from);
         }
+        
+        if (req.query.to) {
+          conditions.push(`destination = $${queryParams.length + 1}`);
+          queryParams.push(req.query.to);
+        }
+        
+        if (req.query.transportType) {
+          conditions.push(`transport_type = $${queryParams.length + 1}`);
+          queryParams.push(req.query.transportType);
+        }
+
+        // Get basic stats using SQL aggregation
+        let statsQuery = `
+          SELECT 
+            COUNT(DISTINCT CONCAT(origin, '|', destination)) as total_routes,
+            COUNT(DISTINCT operator_name) as unique_providers,
+            COUNT(DISTINCT transport_type) as transport_types_count,
+            ARRAY_AGG(DISTINCT transport_type) as transport_types,
+            MIN(price_inr) as min_price,
+            MAX(price_inr) as max_price,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_inr) as median_price,
+            AVG(price_inr) as avg_price,
+            STDDEV(price_inr) as std_dev
+          FROM trips
+        `;
+
+        if (conditions.length > 0) {
+          statsQuery += ' WHERE ' + conditions.join(' AND ');
+        }
+
+        // Get cheapest provider
+        const cheapestProviderQuery = `
+          WITH ranked_prices AS (
+            SELECT 
+              provider,
+              price_inr,
+              ROW_NUMBER() OVER (PARTITION BY provider ORDER BY price_inr) as rn
+            FROM trips
+            ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}
+          )
+          SELECT provider
+          FROM ranked_prices
+          WHERE rn = 1
+          ORDER BY price_inr
+          LIMIT 1
+        `;
+
+        // Execute queries in parallel
+        const [statsResult, cheapestResult] = await Promise.all([
+          pool.query(statsQuery, [...queryParams]),
+          pool.query(cheapestProviderQuery, [...queryParams])
+        ]);
+
+        const stats = statsResult.rows[0];
+        const cheapestProvider = cheapestResult.rows[0]?.provider || 'N/A';
+
+        // Prepare final result
+        const result = {
+          totalRoutes: parseInt(stats.total_routes) || 0,
+          uniqueProviders: parseInt(stats.unique_providers) || 0,
+          meanPrice: parseFloat(stats.avg_price || 0).toFixed(2),
+          lowestPrice: parseFloat(stats.min_price || 0).toFixed(2),
+          highestPrice: parseFloat(stats.max_price || 0).toFixed(2),
+          medianPrice: parseFloat(stats.median_price || 0).toFixed(2),
+          standardDeviation: parseFloat(stats.std_dev || 0).toFixed(2),
+          cheapestCarriers: cheapestProvider,
+          routes: (stats.transport_types || []).filter(Boolean).join(', ')
+        };
+
+        // Cache the result for 5 minutes
+        setInCache(cacheKey, result);
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        
+        return result;
+      } catch (error) {
+        console.error('Error in getStats:', error);
+        throw error;
       }
-
-      // Calculate final statistics
-      const sortedPrices = stats.prices.sort((a, b) => a - b);
-      const median = sortedPrices.length > 0
-        ? sortedPrices[Math.floor(sortedPrices.length / 2)]
-        : 0;
-
-      const sum = stats.prices.reduce((a, b) => a + b, 0);
-      const mean = sum / (stats.prices.length || 1);
-      const squareDiffs = stats.prices.map(price => Math.pow(price - mean, 2));
-      const variance = squareDiffs.reduce((a, b) => a + b, 0) / (squareDiffs.length || 1);
-      const stdDev = Math.sqrt(variance);
-
-      // Find cheapest provider
-      let cheapestProvider = '';
-      let minPrice = Infinity;
-      stats.providers.forEach((value, key) => {
-        if (value.price < minPrice) {
-          minPrice = value.price;
-          cheapestProvider = key;
-        }
-      });
-
-      // Prepare final result
-      const result = {
-        totalRoutes: stats.routes?.size || 0,
-        uniqueProviders: stats.uniqueProviders.size,
-        meanPrice: parseFloat(mean.toFixed(2)),
-        lowestPrice: sortedPrices[0] || 0,
-        highestPrice: sortedPrices[sortedPrices.length - 1] || 0,
-        medianPrice: parseFloat(median.toFixed(2)),
-        standardDeviation: parseFloat(stdDev.toFixed(2)),
-        cheapestCarriers: cheapestProvider,
-        routes: Array.from(stats.transportTypes).join(', ')
-      };
-
-      // Cache the result for 5 minutes
-      setInCache(cacheKey, result);
-      res.setHeader('Cache-Control', 'public, max-age=300');
-      return result;
     };
 
-    const result = await processInChunks();
+    const result = await getStats();
     res.json(result);
   } catch (error) {
     console.error('Error in /api/stats/routes:', error);
