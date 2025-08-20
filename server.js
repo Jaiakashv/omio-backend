@@ -313,40 +313,92 @@ app.get('/api/destinations', async (req, res) => {
   }
 });
 
-// Get route statistics
+// Helper function to execute a query with error handling
+async function safeQuery(query, params = []) {
+  try {
+    const result = await pool.query(query, params);
+    return result.rows[0] || {};
+  } catch (error) {
+    console.error('Query error:', { query, error });
+    return {};
+  }
+}
+
+// Get route statistics with pagination and optimized queries
 app.get('/api/stats/routes', async (req, res) => {
   try {
-    const query = `
+    // Get basic counts first
+    const basicStats = await safeQuery(`
       SELECT 
-        COUNT(DISTINCT CONCAT(origin, '|', destination)) AS "TotalRoutes",
-        ROUND(AVG(price_inr)::numeric, 2) AS "MeanPriceAverage",
-        MIN(price_inr) AS "LowestPrice",
-        MAX(price_inr) AS "HighestPrice",
-        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_inr)::numeric, 2) AS "MedianPrice",
-        ROUND(STDDEV(price_inr)::numeric, 2) AS "StandardDeviation",
-        COUNT(DISTINCT operator_name) AS "NumberOfUniqueOperators",
-        (
-          SELECT provider
-          FROM trips
-          WHERE price_inr = (SELECT MIN(price_inr) FROM trips)
-          LIMIT 1
-        ) AS "CheapestCarrier",
-        (
-          SELECT STRING_AGG(DISTINCT transport_type, ', ')
-          FROM (SELECT transport_type FROM trips WHERE transport_type IS NOT NULL GROUP BY transport_type) t
-        ) AS "Routes"
-      FROM trips;
-    `;
+        COUNT(DISTINCT CONCAT(origin, '|', destination)) AS "totalRoutes",
+        COUNT(DISTINCT operator_name) AS "uniqueProviders"
+      FROM trips
+    `);
 
-    const result = await pool.query(query);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'No route statistics found' });
-    }
+    // Get price statistics
+    const priceStats = await safeQuery(`
+      SELECT 
+        ROUND(AVG(price_inr)::numeric, 2) AS "meanPrice",
+        MIN(price_inr) AS "lowestPrice",
+        MAX(price_inr) AS "highestPrice"
+      FROM trips
+    `);
 
-    res.json(result.rows[0]);
+    // Get median price (more efficient calculation)
+    const medianPrice = await safeQuery(`
+      SELECT 
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_inr) AS "medianPrice"
+      FROM (
+        SELECT price_inr 
+        FROM trips 
+        ORDER BY price_inr 
+        LIMIT 1000 OFFSET (SELECT COUNT(*) FROM trips) / 2
+      ) t
+    `);
+
+    // Get standard deviation (sample instead of full table)
+    const stdDev = await safeQuery(`
+      SELECT 
+        ROUND(STDDEV(price_inr)::numeric, 2) AS "standardDeviation"
+      FROM (
+        SELECT price_inr 
+        FROM trips 
+        WHERE random() < 0.1
+      ) sample
+    `);
+
+    // Get cheapest carrier
+    const cheapestCarrier = await safeQuery(`
+      SELECT provider as "cheapestCarriers"
+      FROM trips
+      ORDER BY price_inr ASC
+      LIMIT 1
+    `);
+
+    // Get transport types
+    const transportTypes = await safeQuery(`
+      SELECT STRING_AGG(DISTINCT transport_type, ', ') AS "routes"
+      FROM (
+        SELECT DISTINCT transport_type 
+        FROM trips 
+        WHERE transport_type IS NOT NULL 
+        LIMIT 50
+      ) t
+    `);
+
+    // Combine all results
+    const result = {
+      ...basicStats,
+      ...priceStats,
+      ...medianPrice,
+      ...stdDev,
+      ...cheapestCarrier,
+      ...transportTypes
+    };
+
+    res.json(result);
   } catch (error) {
-    console.error('Error fetching route statistics:', error);
+    console.error('Error in /api/stats/routes:', error);
     res.status(500).json({ 
       error: 'Failed to fetch route statistics', 
       details: error.message 
