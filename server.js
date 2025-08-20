@@ -389,14 +389,26 @@ async function safeQuery(query, params = []) {
   }
 }
 
+// Memory optimization: Force garbage collection if available
+const maybeRunGC = () => {
+  if (global.gc) {
+    global.gc();
+    console.log('Garbage collection run');
+  }
+};
+
 // Get route statistics with optimized memory usage
 app.get('/api/stats/routes', async (req, res) => {
-  // Create cache key based on query parameters
-  const cacheKey = `routeStats:${JSON.stringify({
-    from: req.query.from,
-    to: req.query.to,
-    transportType: req.query.transportType
-  })}`;
+  // Create a stable cache key based on query parameters
+  const cacheKey = (() => {
+    const params = new URLSearchParams();
+    if (req.query.from) params.set('from', req.query.from);
+    if (req.query.to) params.set('to', req.query.to);
+    if (req.query.transportType) params.set('transportType', req.query.transportType);
+    return `routeStats:${params.toString()}`;
+  })();
+  
+  console.log(`Cache key: ${cacheKey}`);
   
   try {
     // Try to get from cache first
@@ -407,8 +419,10 @@ app.get('/api/stats/routes', async (req, res) => {
     }
     res.setHeader('Cache-Status', 'MISS');
 
-    // Use a more memory-efficient approach with aggregation in the database
+    // Memory optimization: Limit concurrent operations
     const getStats = async () => {
+      // Run GC before starting expensive operation
+      maybeRunGC();
       try {
         // Build base query parts
         const queryParams = [];
@@ -466,11 +480,12 @@ app.get('/api/stats/routes', async (req, res) => {
           LIMIT 1
         `;
 
-        // Execute queries in parallel
-        const [statsResult, cheapestResult] = await Promise.all([
-          pool.query(statsQuery, [...queryParams]),
-          pool.query(cheapestProviderQuery, [...queryParams])
-        ]);
+        // Execute queries sequentially to reduce memory pressure
+        const statsResult = await pool.query(statsQuery, [...queryParams]);
+        maybeRunGC();
+        
+        const cheapestResult = await pool.query(cheapestProviderQuery, [...queryParams]);
+        maybeRunGC();
 
         const stats = statsResult.rows[0];
         const cheapestProvider = cheapestResult.rows[0]?.provider || 'N/A';
@@ -488,11 +503,27 @@ app.get('/api/stats/routes', async (req, res) => {
           routes: (stats.transport_types || []).filter(Boolean).join(', ')
         };
 
-        // Cache the result for 5 minutes
-        setInCache(cacheKey, result);
-        res.setHeader('Cache-Control', 'public, max-age=300');
-        
-        return result;
+        // Cache the result for 5 minutes with size limit
+        try {
+          // Stringify once for size check
+          const resultStr = JSON.stringify(result);
+          const resultSize = Buffer.byteLength(resultStr, 'utf8');
+          
+          // Only cache if result is reasonably sized (under 1MB)
+          if (resultSize < 1024 * 1024) {
+            setInCache(cacheKey, result);
+            console.log(`Cached result (${Math.round(resultSize/1024)}KB) with key: ${cacheKey}`);
+          } else {
+            console.warn('Result too large to cache, skipping cache');
+          }
+          
+          res.setHeader('Cache-Control', 'public, max-age=300');
+          return result;
+        } catch (err) {
+          console.error('Error caching result:', err);
+          // Still return the result even if caching fails
+          return result;
+        }
       } catch (error) {
         console.error('Error in getStats:', error);
         throw error;
@@ -503,9 +534,16 @@ app.get('/api/stats/routes', async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('Error in /api/stats/routes:', error);
+    
+    // Memory optimization: Run GC on error
+    maybeRunGC();
+    
+    // Return a more detailed error response
     res.status(500).json({ 
-      error: 'Failed to fetch route statistics', 
-      details: error.message 
+      error: 'Failed to fetch route statistics',
+      message: error.message,
+      // Don't leak stack traces in production
+      ...(process.env.NODE_ENV !== 'production' ? { stack: error.stack } : {})
     });
   }
 });
