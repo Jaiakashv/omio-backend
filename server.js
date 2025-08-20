@@ -489,21 +489,18 @@ app.get('/api/stats/routes', async (req, res) => {
           statsQuery += ' WHERE ' + conditions.join(' AND ');
         }
 
-        // Get cheapest provider
+        // Get all cheapest providers (multiple providers might have the same minimum price)
         const cheapestProviderQuery = `
-          WITH ranked_prices AS (
-            SELECT 
-              provider,
-              price_inr,
-              ROW_NUMBER() OVER (PARTITION BY provider ORDER BY price_inr) as rn
+          WITH min_price AS (
+            SELECT MIN(price_inr) as min_price
             FROM trips
+            WHERE 1=1
             ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}
           )
-          SELECT provider
-          FROM ranked_prices
-          WHERE rn = 1
-          ORDER BY price_inr
-          LIMIT 1
+          SELECT ARRAY_AGG(DISTINCT provider) as providers
+          FROM trips
+          WHERE price_inr = (SELECT min_price FROM min_price)
+          ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}
         `;
 
         // Execute queries sequentially to reduce memory pressure
@@ -514,7 +511,7 @@ app.get('/api/stats/routes', async (req, res) => {
         maybeRunGC();
 
         const stats = statsResult.rows[0];
-        const cheapestProvider = cheapestResult.rows[0]?.provider || 'N/A';
+        const cheapestProviders = cheapestResult.rows[0]?.providers || [];
 
         // Prepare final result
         const result = {
@@ -525,7 +522,7 @@ app.get('/api/stats/routes', async (req, res) => {
           highestPrice: parseFloat(stats.max_price || 0).toFixed(2),
           medianPrice: parseFloat(stats.median_price || 0).toFixed(2),
           standardDeviation: parseFloat(stats.std_dev || 0).toFixed(2),
-          cheapestCarriers: cheapestProvider,
+          cheapestCarriers: cheapestProviders,
           routes: (stats.transport_types || []).filter(Boolean).join(', ')
         };
 
