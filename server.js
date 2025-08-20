@@ -489,29 +489,28 @@ app.get('/api/stats/routes', async (req, res) => {
           statsQuery += ' WHERE ' + conditions.join(' AND ');
         }
 
-        // Get all cheapest providers (multiple providers might have the same minimum price)
-        const cheapestProviderQuery = `
+        // Get all cheapest operators (multiple operators might have the same minimum price)
+        const cheapestOperatorQuery = `
           WITH min_price AS (
             SELECT MIN(price_inr) as min_price
             FROM trips
-            WHERE 1=1
             ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}
           )
-          SELECT ARRAY_AGG(DISTINCT provider) as providers
+          SELECT ARRAY_AGG(DISTINCT operator_name) as operators
           FROM trips
           WHERE price_inr = (SELECT min_price FROM min_price)
-          ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}
+          ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
         `;
 
         // Execute queries sequentially to reduce memory pressure
         const statsResult = await pool.query(statsQuery, [...queryParams]);
         maybeRunGC();
         
-        const cheapestResult = await pool.query(cheapestProviderQuery, [...queryParams]);
+        const cheapestResult = await pool.query(cheapestOperatorQuery, [...queryParams]);
         maybeRunGC();
 
         const stats = statsResult.rows[0];
-        const cheapestProviders = cheapestResult.rows[0]?.providers || [];
+        const cheapestOperators = cheapestResult.rows[0]?.operators || [];
 
         // Prepare final result
         const result = {
@@ -522,7 +521,7 @@ app.get('/api/stats/routes', async (req, res) => {
           highestPrice: parseFloat(stats.max_price || 0).toFixed(2),
           medianPrice: parseFloat(stats.median_price || 0).toFixed(2),
           standardDeviation: parseFloat(stats.std_dev || 0).toFixed(2),
-          cheapestCarriers: cheapestProviders,
+          cheapestCarriers: cheapestOperators,
           routes: (stats.transport_types || []).filter(Boolean).join(', ')
         };
 
