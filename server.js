@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const dotenv = require('dotenv');
-const LRU = require('lru-cache');
+const { LRUCache } = require('lru-cache');
 
 // Load environment variables
 dotenv.config();
@@ -34,11 +34,10 @@ const MAX_CACHE_ITEMS = 100; // Maximum number of items to keep in cache
 const MAX_CACHE_SIZE = 50 * 1024 * 1024; // 50MB max memory usage
 
 // Initialize LRU cache
-const lruCache = new LRU({
+const lruCache = new LRUCache({
   max: MAX_CACHE_ITEMS,
   maxSize: MAX_CACHE_SIZE,
   sizeCalculation: (value, key) => {
-    // Estimate memory usage of the value
     return JSON.stringify(value).length + key.length;
   },
   ttl: CACHE_DURATION
