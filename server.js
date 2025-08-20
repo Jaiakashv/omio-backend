@@ -317,8 +317,8 @@ app.get('/api/destinations', async (req, res) => {
 app.get('/api/stats/routes', async (req, res) => {
   try {
     const query = `
-      SELECT
-        COUNT(*) AS "TotalRoutes",
+      SELECT 
+        COUNT(DISTINCT CONCAT(origin, '|', destination)) AS "TotalRoutes",
         ROUND(AVG(price_inr)::numeric, 2) AS "MeanPriceAverage",
         MIN(price_inr) AS "LowestPrice",
         MAX(price_inr) AS "HighestPrice",
@@ -326,27 +326,14 @@ app.get('/api/stats/routes', async (req, res) => {
         ROUND(STDDEV(price_inr)::numeric, 2) AS "StandardDeviation",
         COUNT(DISTINCT operator_name) AS "NumberOfUniqueOperators",
         (
-          SELECT
-            provider
-          FROM
-            trips
-          WHERE
-            price_inr = (
-              SELECT
-                MIN(price_inr)
-              FROM
-                trips
-            )
+          SELECT provider
+          FROM trips
+          WHERE price_inr = (SELECT MIN(price_inr) FROM trips)
           LIMIT 1
         ) AS "CheapestCarrier",
         (
           SELECT STRING_AGG(DISTINCT transport_type, ', ')
-          FROM (
-            SELECT transport_type
-            FROM trips
-            WHERE transport_type IS NOT NULL
-            GROUP BY transport_type
-          ) t
+          FROM (SELECT transport_type FROM trips WHERE transport_type IS NOT NULL GROUP BY transport_type) t
         ) AS "Routes"
       FROM trips;
     `;
@@ -360,7 +347,10 @@ app.get('/api/stats/routes', async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error fetching route statistics:', error);
-    res.status(500).json({ error: 'Failed to fetch route statistics', details: error.message });
+    res.status(500).json({ 
+      error: 'Failed to fetch route statistics', 
+      details: error.message 
+    });
   }
 });
 
