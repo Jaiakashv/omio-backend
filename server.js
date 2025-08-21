@@ -361,15 +361,31 @@ app.get('/api/trips/route/:from/:to', async (req, res) => {
   }
 });
 
-// Stats
-app.get('/api/stats', async (req, res) => {
+// General stats
+app.get('/api/stats/summary', async (req, res) => {
   if (tripCacheMap.has('allTrips')) {
-    console.log("⚡ Serving stats from Map cache");
+    console.log("⚡ Serving summary stats from Map cache");
     const trips = tripCacheMap.get('allTrips');
     const totalTrips = trips.length;
     const uniqueOrigins = new Set(trips.map(t => t.origin)).size;
     const uniqueDestinations = new Set(trips.map(t => t.destination)).size;
 
+    res.json({
+      totalTrips,
+      uniqueOrigins,
+      uniqueDestinations
+    });
+  } else {
+    res.status(503).json({ error: 'Stats not ready yet' });
+  }
+});
+
+// Popular routes stats
+app.get('/api/stats/routes/popular', async (req, res) => {
+  if (tripCacheMap.has('allTrips')) {
+    console.log("⚡ Serving popular routes from Map cache");
+    const trips = tripCacheMap.get('allTrips');
+    
     // Calculate most popular routes
     const routeCount = {};
     trips.forEach(t => {
@@ -473,7 +489,7 @@ const maybeRunGC = () => {
 };
 
 // Get route statistics with optimized memory usage
-app.get('/api/stats/routes', async (req, res) => {
+app.get('/api/stats/routes/uniqueroutes', async (req, res) => {
   // Create a stable cache key based on query parameters
   const cacheKey = (() => {
     const params = new URLSearchParams();
@@ -486,7 +502,7 @@ app.get('/api/stats/routes', async (req, res) => {
   console.log(`Cache key: ${cacheKey}`);
   
   try {
-    // Try to get from cache first
+    // Try to get from cache fir
     const cachedResult = getFromCache(cacheKey);
     if (cachedResult) {
       res.setHeader('Cache-Status', 'HIT');
@@ -604,7 +620,7 @@ app.get('/api/stats/routes', async (req, res) => {
     const result = await getStats();
     res.json(result);
   } catch (error) {
-    console.error('Error in /api/stats/routes:', error);
+    console.error('Error in /api/stats/routes/uniqueroutes:', error);
     
     // Memory optimization: Run GC on error
     maybeRunGC();
