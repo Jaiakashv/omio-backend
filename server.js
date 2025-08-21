@@ -147,8 +147,11 @@ app.get('/api/trips/search', async (req, res) => {
     return res.status(400).json({ error: 'Both field and q parameters are required' });
   }
   
-  if (field !== 'origin' && field !== 'destination') {
-    return res.status(400).json({ error: 'Field must be either "origin" or "destination"' });
+  const validFields = ['origin', 'destination', 'transport_type', 'operator_name'];
+  if (!validFields.includes(field)) {
+    return res.status(400).json({ 
+      error: `Field must be one of: ${validFields.join(', ')}` 
+    });
   }
   
   const cacheKey = `search_${field}_${q.toLowerCase()}`;
