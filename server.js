@@ -139,6 +139,52 @@ app.get('/', (req, res) => {
   res.send('API is running');
 });
 
+// Search origins or destinations
+app.get('/api/trips/search', async (req, res) => {
+  const { field, q } = req.query;
+  
+  if (!field || !q) {
+    return res.status(400).json({ error: 'Both field and q parameters are required' });
+  }
+  
+  if (field !== 'origin' && field !== 'destination') {
+    return res.status(400).json({ error: 'Field must be either "origin" or "destination"' });
+  }
+  
+  const cacheKey = `search_${field}_${q.toLowerCase()}`;
+  const cachedResults = getFromCache(cacheKey);
+  
+  if (cachedResults) {
+    console.log(`⚡ Serving search results for ${field} from cache`);
+    return res.json({ results: cachedResults });
+  }
+  
+  try {
+    const query = `
+      SELECT DISTINCT ${field} 
+      FROM trips 
+      WHERE LOWER(${field}) LIKE LOWER($1) 
+      ORDER BY ${field} ASC 
+      LIMIT 10
+    `;
+    const searchTerm = `%${q}%`;
+    const result = await pool.query(query, [searchTerm]);
+    
+    // Format results for the frontend
+    const results = result.rows.map(row => ({
+      [field]: row[field]
+    }));
+    
+    // Cache the results
+    setInCache(cacheKey, results);
+    
+    res.json({ results });
+  } catch (error) {
+    console.error(`Error searching ${field}s:`, error);
+    res.status(500).json({ error: `Error searching ${field}s` });
+  }
+});
+
 // Get all trips (cached with LRU)
 app.get('/api/trips/all', async (req, res) => {
   const cacheKey = 'allTrips';
