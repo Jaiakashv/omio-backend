@@ -480,8 +480,6 @@ app.get('/api/stats/routes', async (req, res) => {
     if (req.query.from) params.set('from', req.query.from);
     if (req.query.to) params.set('to', req.query.to);
     if (req.query.transportType) params.set('transportType', req.query.transportType);
-    if (req.query.startDate) params.set('startDate', req.query.startDate);
-    if (req.query.endDate) params.set('endDate', req.query.endDate);
     return `routeStats:${params.toString()}`;
   })();
   
@@ -519,17 +517,6 @@ app.get('/api/stats/routes', async (req, res) => {
         if (req.query.transportType) {
           conditions.push(`transport_type = $${queryParams.length + 1}`);
           queryParams.push(req.query.transportType);
-        }
-        
-        // Add date range filter if provided
-        if (req.query.startDate) {
-          conditions.push(`departure_date >= $${queryParams.length + 1}::date`);
-          queryParams.push(req.query.startDate);
-        }
-        
-        if (req.query.endDate) {
-          conditions.push(`departure_date <= $${queryParams.length + 1}::date`);
-          queryParams.push(req.query.endDate);
         }
 
         // Get basic stats using SQL aggregation
