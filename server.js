@@ -497,12 +497,79 @@ const buildQueryConditions = (req) => {
 
 // Helper function to get cache key
 const getCacheKey = (req, suffix = '') => {
-  const params = new URLSearchParams();
-  if (req.query.from) params.set('from', req.query.from);
-  if (req.query.to) params.set('to', req.query.to);
-  if (req.query.transportType) params.set('transportType', req.query.transportType);
-  return `routeStats:${suffix}:${params.toString()}`;
+  const { from, to, transportType, search } = req.query;
+  const baseKey = `from_${from || 'all'}_to_${to || 'all'}_type_${transportType || 'all'}_search_${search || 'none'}`;
+  return suffix ? `${baseKey}_${suffix}` : baseKey;
 };
+
+// Search trips across multiple fields
+app.get('/api/trips/search', async (req, res) => {
+  const { q: searchTerm, limit = 50, offset = 0 } = req.query;
+  const cacheKey = `search_${searchTerm}_${limit}_${offset}`;
+
+  try {
+    if (!searchTerm) {
+      return res.status(400).json({ error: 'Search term is required' });
+    }
+
+    // Check cache first
+    const cachedResults = getFromCache(cacheKey);
+    if (cachedResults) {
+      console.log('⚡ Serving search results from cache');
+      return res.json(cachedResults);
+    }
+
+    // Build the search query
+    const searchQuery = `
+      SELECT * FROM trips
+      WHERE 
+        LOWER(title) LIKE LOWER($1) OR
+        LOWER(origin) LIKE LOWER($1) OR
+        LOWER(destination) LIKE LOWER($1) OR
+        LOWER(transport_type) LIKE LOWER($1) OR
+        LOWER(operator_name) LIKE LOWER($1) OR
+        LOWER(provider) LIKE LOWER($1)
+      ORDER BY departure_time DESC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const searchParam = `%${searchTerm}%`;
+    
+    // Execute the query
+    const { rows } = await pool.query(searchQuery, [searchParam, limit, offset]);
+    
+    // Get total count for pagination
+    const countQuery = `
+      SELECT COUNT(*) 
+      FROM trips
+      WHERE 
+        LOWER(title) LIKE LOWER($1) OR
+        LOWER(origin) LIKE LOWER($1) OR
+        LOWER(destination) LIKE LOWER($1) OR
+        LOWER(transport_type) LIKE LOWER($1) OR
+        LOWER(operator_name) LIKE LOWER($1) OR
+        LOWER(provider) LIKE LOWER($1)
+    `;
+    
+    const countResult = await pool.query(countQuery, [searchParam]);
+    const total = parseInt(countResult.rows[0].count, 10);
+
+    const result = {
+      results: rows,
+      total,
+      limit: parseInt(limit, 10),
+      offset: parseInt(offset, 10)
+    };
+
+    // Cache the results
+    setInCache(cacheKey, result);
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Error searching trips:', error);
+    res.status(500).json({ error: 'Failed to search trips' });
+  }
+});
 
 // Get total routes count
 app.get('/api/stats/routes/total', async (req, res) => {
