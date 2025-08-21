@@ -472,6 +472,250 @@ const maybeRunGC = () => {
   }
 };
 
+// Helper function to build base query conditions
+const buildQueryConditions = (req) => {
+  const queryParams = [];
+  const conditions = [];
+  
+  if (req.query.from) {
+    conditions.push(`origin = $${queryParams.length + 1}`);
+    queryParams.push(req.query.from);
+  }
+  
+  if (req.query.to) {
+    conditions.push(`destination = $${queryParams.length + 1}`);
+    queryParams.push(req.query.to);
+  }
+  
+  if (req.query.transportType) {
+    conditions.push(`transport_type = $${queryParams.length + 1}`);
+    queryParams.push(req.query.transportType);
+  }
+  
+  return { conditions, queryParams };
+};
+
+// Helper function to get cache key
+const getCacheKey = (req, suffix = '') => {
+  const params = new URLSearchParams();
+  if (req.query.from) params.set('from', req.query.from);
+  if (req.query.to) params.set('to', req.query.to);
+  if (req.query.transportType) params.set('transportType', req.query.transportType);
+  return `routeStats:${suffix}:${params.toString()}`;
+};
+
+// Get total routes count
+app.get('/api/stats/routes/total', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'total');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT COUNT(DISTINCT CONCAT(origin, \'|\', destination)) as count FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const count = parseInt(result.rows[0]?.count || 0);
+    setInCache(cacheKey, { count });
+    res.json({ count });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/total:', error);
+    res.status(500).json({ error: 'Failed to fetch total routes' });
+  }
+});
+
+// Get mean price
+app.get('/api/stats/routes/meanprice', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'meanprice');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT AVG(price_inr) as mean FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const mean = parseFloat(result.rows[0]?.mean || 0).toFixed(2);
+    setInCache(cacheKey, { mean });
+    res.json({ mean });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/meanprice:', error);
+    res.status(500).json({ error: 'Failed to fetch mean price' });
+  }
+});
+
+// Get lowest price
+app.get('/api/stats/routes/lowestprice', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'lowestprice');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT MIN(price_inr) as min FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const min = parseFloat(result.rows[0]?.min || 0).toFixed(2);
+    setInCache(cacheKey, { min });
+    res.json({ min });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/lowestprice:', error);
+    res.status(500).json({ error: 'Failed to fetch lowest price' });
+  }
+});
+
+// Get highest price
+app.get('/api/stats/routes/highestprice', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'highestprice');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT MAX(price_inr) as max FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const max = parseFloat(result.rows[0]?.max || 0).toFixed(2);
+    setInCache(cacheKey, { max });
+    res.json({ max });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/highestprice:', error);
+    res.status(500).json({ error: 'Failed to fetch highest price' });
+  }
+});
+
+// Get median price
+app.get('/api/stats/routes/medianprice', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'medianprice');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_inr) as median FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const median = parseFloat(result.rows[0]?.median || 0).toFixed(2);
+    setInCache(cacheKey, { median });
+    res.json({ median });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/medianprice:', error);
+    res.status(500).json({ error: 'Failed to fetch median price' });
+  }
+});
+
+// Get standard deviation
+app.get('/api/stats/routes/standarddeviation', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'stddev');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT STDDEV(price_inr) as stddev FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const stddev = parseFloat(result.rows[0]?.stddev || 0).toFixed(2);
+    setInCache(cacheKey, { stddev });
+    res.json({ stddev });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/standarddeviation:', error);
+    res.status(500).json({ error: 'Failed to fetch standard deviation' });
+  }
+});
+
+// Get unique providers
+app.get('/api/stats/routes/uniqueproviders', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'uniqueproviders');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    let query = 'SELECT COUNT(DISTINCT operator_name) as count FROM trips';
+    if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
+    
+    const result = await pool.query(query, queryParams);
+    const count = parseInt(result.rows[0]?.count || 0);
+    setInCache(cacheKey, { count });
+    res.json({ count });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/uniqueproviders:', error);
+    res.status(500).json({ error: 'Failed to fetch unique providers' });
+  }
+});
+
+// Get cheapest carriers
+app.get('/api/stats/routes/cheapestcarriers', async (req, res) => {
+  const cacheKey = getCacheKey(req, 'cheapestcarriers');
+  try {
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      res.setHeader('Cache-Status', 'HIT');
+      return res.json(cachedResult);
+    }
+    
+    const { conditions, queryParams } = buildQueryConditions(req);
+    
+    const minPriceQuery = `
+      SELECT MIN(price_inr) as min_price
+      FROM trips
+      ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}
+    `;
+    
+    const minPriceResult = await pool.query(minPriceQuery, [...queryParams]);
+    const minPrice = parseFloat(minPriceResult.rows[0]?.min_price || 0);
+    
+    if (minPrice === 0) {
+      setInCache(cacheKey, { carriers: [] });
+      return res.json({ carriers: [] });
+    }
+    
+    const carriersQuery = `
+      SELECT DISTINCT operator_name 
+      FROM trips 
+      WHERE price_inr = $${queryParams.length + 1}
+      ${conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : ''}
+    `;
+    
+    const carriersResult = await pool.query(carriersQuery, [...queryParams, minPrice]);
+    const carriers = carriersResult.rows.map(row => row.operator_name).filter(Boolean);
+    
+    setInCache(cacheKey, { carriers });
+    res.json({ carriers });
+  } catch (error) {
+    console.error('Error in /api/stats/routes/cheapestcarriers:', error);
+    res.status(500).json({ error: 'Failed to fetch cheapest carriers' });
+  }
+});
+
 // Get route statistics with optimized memory usage
 app.get('/api/stats/routes', async (req, res) => {
   // Create a stable cache key based on query parameters
