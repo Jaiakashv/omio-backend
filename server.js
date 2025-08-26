@@ -905,36 +905,68 @@ app.get('/api/combined-trips', async (req, res) => {
       WHERE 1=1
     `;
 
-    const params = [];
-    let paramIndex = 1;
+    // Create separate parameter arrays for each query
+    const params12go = [];
+    const paramsBookaway = [];
+    let paramIndex12go = 1;
+    let paramIndexBookaway = 1;
 
-    const addFilter = (field, value, query) => {
+    const addFilter = (field, value, query, params, paramIndex) => {
       if (value) {
         // Special handling for provider field since we're aliasing it
         const columnName = field === 'provider' ? 'source_provider' : field;
         query += ` AND ${columnName} = $${paramIndex}`;
-        console.log(`Adding filter: ${columnName} = ${value}`);
+        console.log(`Adding filter: ${columnName} = ${value} (param $${paramIndex})`);
         params.push(value);
-        paramIndex++;
+        return { query, paramIndex: paramIndex + 1 };
       }
-      return query;
+      return { query, paramIndex };
     };
 
-    query12go = addFilter('origin', origin, query12go);
-    query12go = addFilter('destination', destination, query12go);
-    query12go = addFilter('operator_name', operator_name, query12go);
-    query12go = addFilter('transport_type', transport_type, query12go);
+    // Apply filters to 12go query
+    let result12go = addFilter('origin', origin, query12go, params12go, paramIndex12go);
+    query12go = result12go.query;
+    paramIndex12go = result12go.paramIndex;
+    
+    result12go = addFilter('destination', destination, query12go, params12go, paramIndex12go);
+    query12go = result12go.query;
+    paramIndex12go = result12go.paramIndex;
+    
+    result12go = addFilter('operator_name', operator_name, query12go, params12go, paramIndex12go);
+    query12go = result12go.query;
+    paramIndex12go = result12go.paramIndex;
+    
+    result12go = addFilter('transport_type', transport_type, query12go, params12go, paramIndex12go);
+    query12go = result12go.query;
+    paramIndex12go = result12go.paramIndex;
 
-    queryBookaway = addFilter('origin', origin, queryBookaway);
-    queryBookaway = addFilter('destination', destination, queryBookaway);
-    queryBookaway = addFilter('operator_name', operator_name, queryBookaway);
-    queryBookaway = addFilter('transport_type', transport_type, queryBookaway);
+    // Apply filters to Bookaway query
+    let resultBookaway = addFilter('origin', origin, queryBookaway, paramsBookaway, paramIndexBookaway);
+    queryBookaway = resultBookaway.query;
+    paramIndexBookaway = resultBookaway.paramIndex;
+    
+    resultBookaway = addFilter('destination', destination, queryBookaway, paramsBookaway, paramIndexBookaway);
+    queryBookaway = resultBookaway.query;
+    paramIndexBookaway = resultBookaway.paramIndex;
+    
+    resultBookaway = addFilter('operator_name', operator_name, queryBookaway, paramsBookaway, paramIndexBookaway);
+    queryBookaway = resultBookaway.query;
+    paramIndexBookaway = resultBookaway.paramIndex;
+    
+    resultBookaway = addFilter('transport_type', transport_type, queryBookaway, paramsBookaway, paramIndexBookaway);
+    queryBookaway = resultBookaway.query;
+    paramIndexBookaway = resultBookaway.paramIndex;
 
+    // Handle date range for both queries
     if (timeline === 'Custom' && start_date && end_date) {
-      query12go += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
-      queryBookaway += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
-      params.push(start_date, end_date);
-      paramIndex += 2;
+      query12go += ` AND travel_date BETWEEN $${paramIndex12go} AND $${paramIndex12go + 1}`;
+      queryBookaway += ` AND travel_date BETWEEN $${paramIndexBookaway} AND $${paramIndexBookaway + 1}`;
+      
+      params12go.push(start_date, end_date);
+      paramsBookaway.push(start_date, end_date);
+      
+      paramIndex12go += 2;
+      paramIndexBookaway += 2;
     } else if (timeline) {
       // Normalize the timeline value (trim and lowercase for case-insensitive comparison)
       const normalizedTimeline = timeline.trim().toLowerCase();
@@ -978,13 +1010,14 @@ app.get('/api/combined-trips', async (req, res) => {
 
     console.log('Executing queries...');
     console.log('12go query:', query12go);
+    console.log('12go params:', params12go);
     console.log('Bookaway query:', queryBookaway);
-    console.log('Query params:', params);
+    console.log('Bookaway params:', paramsBookaway);
 
     try {
       const [result12go, resultBookaway] = await Promise.all([
-        safeQuery(pools['12go'], query12go, params),
-        safeQuery(pools['bookaway'], queryBookaway, params)
+        safeQuery(pools['12go'], query12go, params12go),
+        safeQuery(pools['bookaway'], queryBookaway, paramsBookaway)
       ]);
 
       console.log('12go results count:', result12go?.rows?.length || 0);
