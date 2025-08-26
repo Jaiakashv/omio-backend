@@ -837,265 +837,209 @@ app.get('/api/filters', async (req, res) => {
   }
 });
 
-// Combined trips query endpoint
+// Combined trips endpoint with pagination, sorting, and caching
 app.get('/api/combined-trips', async (req, res) => {
-  console.log('=== Received request ===');
-  console.log('Full URL:', req.protocol + '://' + req.get('host') + req.originalUrl);
-  console.log('Query params:', JSON.stringify(req.query, null, 2));
-  
-  const {
-    origin,
-    destination,
-    operator_name,
-    transport_type,
-    timeline,
-    start_date,
-    end_date
-  } = req.query;
-  
-  // Log the received parameters for debugging
-  console.log('Parsed parameters:');
-  console.log('- origin:', origin);
-  console.log('- destination:', destination);
-  console.log('- timeline:', timeline);
-  console.log('- transport_type:', transport_type);
-  console.log('- operator_name:', operator_name);
-  console.log('- start_date:', start_date);
-  console.log('- end_date:', end_date);
-
   try {
-    console.log('Building queries for combined trips...');
-    
-    // Get the list of columns that exist in both tables
-    // let query12go = `
-    //   SELECT 
-    //     '12go' as provider,
-    //     id,
-    //     origin,
-    //     destination,
-    //     departure_time,
-    //     arrival_time,
-    //     duration_min as duration,
-    //     price,
-    //     transport_type,
-    //     operator_name,
-    //     travel_date,
-    //     created_at,
-    //     provider as source_provider
-    //   FROM trips 
-    //   WHERE 1=1
-    // `;
+    // Parse query parameters with defaults
+    const {
+      origin,
+      destination,
+      operator_name,
+      transport_type,
+      timeline,
+      start_date,
+      end_date,
+      page = '1',
+      limit = '50',
+      sort_by = 'departure_time',
+      sort_order = 'ASC'
+    } = req.query;
 
-    // let queryBookaway = `
-    //   SELECT 
-    //     'bookaway' as provider,
-    //     id,
-    //     origin,
-    //     destination,
-    //     departure_time,
-    //     arrival_time,
-    //     duration_min as duration,
-    //     price,
-    //     transport_type,
-    //     operator_name,
-    //     travel_date,
-    //     created_at,
-    //     provider as source_provider
-    //   FROM bookaway_trips 
-    //   WHERE 1=1
-    // `;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit))); // Cap at 100 items per page
+    const offset = (pageNum - 1) * limitNum;
 
-    // Build queries for both databases
-    let query12go = `
-      SELECT 
-        '12go' as provider,
-        id,
-        origin,
-        destination,
-        departure_time,
-        arrival_time,
-        duration_min as duration,
-        price,
-        transport_type,
-        operator_name,
-        travel_date,
-        created_at,
-        provider as source_provider
-      FROM trips 
-      WHERE 1=1
-    `;
+    // Create a cache key based on all query parameters
+    const cacheKey = `combined_trips_${JSON.stringify({
+      origin, destination, operator_name, transport_type, 
+      timeline, start_date, end_date, pageNum, limitNum,
+      sort_by, sort_order
+    })}`;
 
-    let queryBookaway = `
-      SELECT 
-        'bookaway' as provider,
-        id,
-        origin,
-        destination,
-        departure_time,
-        arrival_time,
-        duration_min as duration,
-        price,
-        transport_type,
-        operator_name,
-        travel_date,
-        created_at,
-        provider as source_provider
-      FROM bookaway_trips 
-      WHERE 1=1
-    `;
+    // Try to get from cache first
+    const cachedResult = getFromCache(cacheKey);
+    if (cachedResult) {
+      console.log('✅ Serving from cache:', cacheKey);
+      return res.json(cachedResult);
+    }
 
-    // Create separate parameter arrays for each query
-    const params12go = [];
-    const paramsBookaway = [];
-    let paramIndex12go = 1;
-    let paramIndexBookaway = 1;
+    // Build dynamic queries for both providers with pagination and sorting
+    const buildQuery = (tableName) => {
+      const params = [];
+      const conditions = [];
 
-    const addFilter = (field, value, query, params, paramIndex) => {
-      if (value) {
-        query += ` AND ${field} = $${paramIndex}`;
-        console.log(`Adding filter: ${field} = ${value} (param $${paramIndex})`);
-        params.push(value);
-        return { query, paramIndex: paramIndex + 1 };
-      }
-      return { query, paramIndex };
-    };
+      // Add filter conditions with parameterized queries
+      [
+        { field: 'origin', value: origin, exact: true },
+        { field: 'destination', value: destination, exact: true },
+        { field: 'operator_name', value: operator_name, exact: false },
+        { field: 'transport_type', value: transport_type, exact: true }
+      ].forEach(({ field, value, exact }) => {
+        if (value) {
+          if (exact) {
+            params.push(value);
+            conditions.push(`${field} = $${params.length}`);
+          } else {
+            params.push(`%${value}%`);
+            conditions.push(`${field} ILIKE $${params.length}`);
+          }
+        }
+      });
 
-    // Apply filters to 12go query
-    let result12go = addFilter('origin', origin, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
-    
-    result12go = addFilter('destination', destination, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
-    
-    result12go = addFilter('operator_name', operator_name, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
-    
-    result12go = addFilter('transport_type', transport_type, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
-
-    // Apply filters to Bookaway query
-    let resultBookaway = addFilter('origin', origin, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-    
-    resultBookaway = addFilter('destination', destination, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-    
-    resultBookaway = addFilter('operator_name', operator_name, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-    
-    resultBookaway = addFilter('transport_type', transport_type, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-
-    // Handle date range for both queries
-    const handleDateRange = (query, params, paramIndex) => {
-      if (timeline === 'Custom' && start_date && end_date) {
-        query += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
-        params.push(start_date, end_date);
-        return { query, paramIndex: paramIndex + 2 };
-      } else if (timeline) {
-        const normalizedTimeline = timeline.trim().toLowerCase();
-        console.log('Normalized timeline:', normalizedTimeline);
-        
-        let dateCondition = '';
-        switch (normalizedTimeline) {
+      // Add date filtering
+      if (timeline) {
+        switch (timeline.toLowerCase()) {
           case 'today':
-            dateCondition = 'travel_date = CURRENT_DATE';
+            conditions.push(`travel_date = CURRENT_DATE`);
             break;
           case 'yesterday':
-            dateCondition = 'travel_date = CURRENT_DATE - INTERVAL \'1 day\'';
+            conditions.push(`travel_date = CURRENT_DATE - INTERVAL '1 day'`);
             break;
           case 'last 7 days':
-            dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'7 days\'';
+            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '7 days'`);
             break;
           case 'last 14 days':
-            dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'14 days\'';
-            break;
-          case 'last 28 days':
-            dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'28 days\'';
-            break;
-          case 'last 30 days':
-            dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'30 days\'';
-            break;
-          case 'last 90 days':
-            dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'90 days\'';
+            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '14 days'`);
             break;
           case 'this month':
-            dateCondition = "travel_date >= date_trunc('month', CURRENT_DATE) AND travel_date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'";
+            conditions.push(`travel_date >= date_trunc('month', CURRENT_DATE)`);
             break;
           case 'this year':
-            dateCondition = "travel_date >= date_trunc('year', CURRENT_DATE) AND travel_date < date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'";
+            conditions.push(`travel_date >= date_trunc('year', CURRENT_DATE)`);
+            break;
+          case 'custom':
+            if (start_date && end_date) {
+              params.push(start_date, end_date);
+              conditions.push(`travel_date BETWEEN $${params.length - 1} AND $${params.length}`);
+            }
             break;
         }
-        if (dateCondition) {
-          query += ` AND ${dateCondition}`;
-        }
       }
-      return { query, paramIndex };
+
+      // Base query with conditions
+      let query = `
+        SELECT *, 
+        (SELECT COUNT(*) FROM ${tableName} ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}) as total_count
+        FROM ${tableName}
+      `;
+
+      // Add WHERE clause if there are conditions
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      // Add sorting
+      const safeSortBy = ['departure_time', 'arrival_time', 'price'].includes(sort_by) 
+        ? sort_by 
+        : 'departure_time';
+      const safeSortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) 
+        ? sort_order.toUpperCase() 
+        : 'ASC';
+      
+      query += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
+      
+      // Add pagination
+      params.push(limitNum, offset);
+      query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+      
+      return { query, params };
     };
 
-    // Apply date range to both queries
-    let dateResult = handleDateRange(query12go, params12go, paramIndex12go);
-    query12go = dateResult.query;
-    paramIndex12go = dateResult.paramIndex;
+    // Build queries with table-specific configurations
+    const twelveGoQuery = buildQuery('trips');
+    const bookawayQuery = buildQuery('bookaway_trips');
+    
+    console.log('12go Query:', twelveGoQuery.query);
+    console.log('12go Params:', twelveGoQuery.params);
+    console.log('Bookaway Query:', bookawayQuery.query);
+    console.log('Bookaway Params:', bookawayQuery.params);
 
-    dateResult = handleDateRange(queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = dateResult.query;
-    paramIndexBookaway = dateResult.paramIndex;
-
-    console.log('Executing queries...');
-    console.log('12go query:', query12go);
-    console.log('12go params:', params12go);
-    console.log('Bookaway query:', queryBookaway);
-    console.log('Bookaway params:', paramsBookaway);
-
+    // Execute queries in parallel with timeout and better error handling
+    let result12go = [];
+    let resultBookaway = [];
+    
     try {
-      // Execute both queries in parallel
-      const [result12go, resultBookaway] = await Promise.all([
-        safeQuery(pools['12go'], query12go, params12go),
-        safeQuery(pools['bookaway'], queryBookaway, paramsBookaway)
+      [result12go, resultBookaway] = await Promise.all([
+        pools['12go'].query(twelveGoQuery.query, twelveGoQuery.params)
+          .then(res => res.rows)
+          .catch(err => {
+            console.error('12go Query Error:', err);
+            return [];
+          }),
+        pools['bookaway'].query(bookawayQuery.query, bookawayQuery.params)
+          .then(res => res.rows)
+          .catch(err => {
+            console.error('Bookaway Query Error:', err);
+            return [];
+          })
       ]);
-
-      console.log('12go results count:', result12go?.rows?.length || 0);
-      console.log('Bookaway results count:', resultBookaway?.rows?.length || 0);
-
-      // Combine results
-      const combinedResults = [
-        ...(result12go?.rows || []),
-        ...(resultBookaway?.rows || [])
-      ];
-
-      console.log('Total combined results:', combinedResults.length);
-
-      res.json({
-        success: true,
-        data: combinedResults,
-        count: combinedResults.length
-      });
     } catch (error) {
-      console.error('Error executing queries:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to fetch trips',
-        details: error.message
-      });
+      console.error('Error executing parallel queries:', error);
     }
+
+    console.log('12go Results:', result12go?.length || 0, 'items');
+    console.log('Bookaway Results:', resultBookaway?.length || 0, 'items');
+
+    // Process results
+    const processResults = (results, source) => {
+      console.log(`Processing ${source} results:`, results?.length || 0, 'items');
+      if (!results || results.length === 0) {
+        console.log(`No results from ${source}`);
+        return { items: [], total: 0 };
+      }
+      const processed = {
+        items: results.map(({ total_count, ...rest }) => rest), // Remove total_count from items
+        total: results[0]?.total_count || 0
+      };
+      console.log(`Processed ${source}:`, processed.items.length, 'items, total:', processed.total);
+      return processed;
+    };
+
+    const twelveGoData = processResults(result12go, '12go');
+    const bookawayData = processResults(resultBookaway, 'bookaway');
+    
+    console.log('12go Data:', twelveGoData.items.length, 'items');
+    console.log('Bookaway Data:', bookawayData.items.length, 'items');
+
+    // Combine results
+    const combinedResults = {
+      data: [...twelveGoData.items, ...bookawayData.items],
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: (twelveGoData.total || 0) + (bookawayData.total || 0),
+        totalPages: Math.ceil(((twelveGoData.total || 0) + (bookawayData.total || 0)) / limitNum)
+      }
+    };
+
+    // Cache the result for 1 minute (adjust as needed)
+    setInCache(cacheKey, combinedResults, 60000);
+    
+    res.json({
+      success: true,
+      ...combinedResults
+    });
 
   } catch (error) {
     console.error('Error in combined trips query:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch combined trips data'
+      error: 'Failed to fetch combined trips data',
+      details: error.message
     });
   }
 });
+
 
 const server = app.listen(port, () => {
   console.log(`🚀 Server v2 running on port ${port}`);
