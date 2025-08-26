@@ -875,12 +875,13 @@ app.get('/api/combined-trips', async (req, res) => {
         destination,
         departure_time,
         arrival_time,
-        duration,
+        duration_min as duration,
         price,
         transport_type,
         operator_name,
         travel_date,
-        created_at
+        created_at,
+        provider as source_provider
       FROM trips 
       WHERE 1=1
     `;
@@ -893,12 +894,13 @@ app.get('/api/combined-trips', async (req, res) => {
         destination,
         departure_time,
         arrival_time,
-        duration,
+        duration_min as duration,
         price,
         transport_type,
         operator_name,
         travel_date,
-        created_at
+        created_at,
+        provider as source_provider
       FROM bookaway_trips 
       WHERE 1=1
     `;
@@ -908,7 +910,10 @@ app.get('/api/combined-trips', async (req, res) => {
 
     const addFilter = (field, value, query) => {
       if (value) {
-        query += ` AND ${field} = $${paramIndex}`;
+        // Special handling for provider field since we're aliasing it
+        const columnName = field === 'provider' ? 'source_provider' : field;
+        query += ` AND ${columnName} = $${paramIndex}`;
+        console.log(`Adding filter: ${columnName} = ${value}`);
         params.push(value);
         paramIndex++;
       }
