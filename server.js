@@ -905,70 +905,79 @@ app.get('/api/combined-trips', async (req, res) => {
       WHERE 1=1
     `;
 
-    // Create separate parameter arrays for each query
-    const params12go = [];
-    const paramsBookaway = [];
-    let paramIndex12go = 1;
-    let paramIndexBookaway = 1;
+    // Build a single query with UNION ALL to combine results from both tables
+    let combinedQuery = `
+      SELECT 
+        '12go' as provider,
+        id,
+        origin,
+        destination,
+        departure_time,
+        arrival_time,
+        duration_min as duration,
+        price,
+        transport_type,
+        operator_name,
+        travel_date,
+        created_at,
+        provider as source_provider
+      FROM trips 
+      WHERE 1=1
+    `;
 
-    const addFilter = (field, value, query, params, paramIndex) => {
+    let unionQuery = `
+      UNION ALL
+      SELECT 
+        'bookaway' as provider,
+        id,
+        origin,
+        destination,
+        departure_time,
+        arrival_time,
+        duration_min as duration,
+        price,
+        transport_type,
+        operator_name,
+        travel_date,
+        created_at,
+        provider as source_provider
+      FROM bookaway_trips 
+      WHERE 1=1
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    const addFilter = (field, value, query) => {
       if (value) {
-        // Special handling for provider field since we're aliasing it
-        const columnName = field === 'provider' ? 'source_provider' : field;
-        query += ` AND ${columnName} = $${paramIndex}`;
-        console.log(`Adding filter: ${columnName} = ${value} (param $${paramIndex})`);
+        query += ` AND ${field} = $${paramIndex}`;
+        console.log(`Adding filter: ${field} = ${value} (param $${paramIndex})`);
         params.push(value);
-        return { query, paramIndex: paramIndex + 1 };
+        paramIndex++;
       }
-      return { query, paramIndex };
+      return query;
     };
 
-    // Apply filters to 12go query
-    let result12go = addFilter('origin', origin, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
+    // Apply filters to both parts of the UNION query
+    combinedQuery = addFilter('origin', origin, combinedQuery);
+    unionQuery = addFilter('origin', origin, unionQuery);
     
-    result12go = addFilter('destination', destination, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
+    combinedQuery = addFilter('destination', destination, combinedQuery);
+    unionQuery = addFilter('destination', destination, unionQuery);
     
-    result12go = addFilter('operator_name', operator_name, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
+    combinedQuery = addFilter('operator_name', operator_name, combinedQuery);
+    unionQuery = addFilter('operator_name', operator_name, unionQuery);
     
-    result12go = addFilter('transport_type', transport_type, query12go, params12go, paramIndex12go);
-    query12go = result12go.query;
-    paramIndex12go = result12go.paramIndex;
+    combinedQuery = addFilter('transport_type', transport_type, combinedQuery);
+    unionQuery = addFilter('transport_type', transport_type, unionQuery);
 
-    // Apply filters to Bookaway query
-    let resultBookaway = addFilter('origin', origin, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-    
-    resultBookaway = addFilter('destination', destination, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-    
-    resultBookaway = addFilter('operator_name', operator_name, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-    
-    resultBookaway = addFilter('transport_type', transport_type, queryBookaway, paramsBookaway, paramIndexBookaway);
-    queryBookaway = resultBookaway.query;
-    paramIndexBookaway = resultBookaway.paramIndex;
-
-    // Handle date range for both queries
+    // Handle date range
     if (timeline === 'Custom' && start_date && end_date) {
-      query12go += ` AND travel_date BETWEEN $${paramIndex12go} AND $${paramIndex12go + 1}`;
-      queryBookaway += ` AND travel_date BETWEEN $${paramIndexBookaway} AND $${paramIndexBookaway + 1}`;
-      
-      params12go.push(start_date, end_date);
-      paramsBookaway.push(start_date, end_date);
-      
-      paramIndex12go += 2;
-      paramIndexBookaway += 2;
+      combinedQuery += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      unionQuery += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      params.push(start_date, end_date);
+      paramIndex += 2;
     } else if (timeline) {
-      // Normalize the timeline value (trim and lowercase for case-insensitive comparison)
       const normalizedTimeline = timeline.trim().toLowerCase();
       console.log('Normalized timeline:', normalizedTimeline);
       
@@ -996,37 +1005,28 @@ app.get('/api/combined-trips', async (req, res) => {
           dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'90 days\'';
           break;
         case 'this month':
-          dateCondition = "travel_date >= date_trunc('month', CURRENT_DATE) AND travel_date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'"
+          dateCondition = "travel_date >= date_trunc('month', CURRENT_DATE) AND travel_date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'";
           break;
         case 'this year':
-          dateCondition = "travel_date >= date_trunc('year', CURRENT_DATE) AND travel_date < date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'"
+          dateCondition = "travel_date >= date_trunc('year', CURRENT_DATE) AND travel_date < date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'";
           break;
       }
       if (dateCondition) {
-        query12go += ` AND ${dateCondition}`;
-        queryBookaway += ` AND ${dateCondition}`;
+        combinedQuery += ` AND ${dateCondition}`;
+        unionQuery += ` AND ${dateCondition}`;
       }
     }
 
-    console.log('Executing queries...');
-    console.log('12go query:', query12go);
-    console.log('12go params:', params12go);
-    console.log('Bookaway query:', queryBookaway);
-    console.log('Bookaway params:', paramsBookaway);
+    // Combine the queries
+    const finalQuery = combinedQuery + unionQuery;
+    console.log('Executing combined query:', finalQuery);
+    console.log('Query parameters:', params);
 
     try {
-      const [result12go, resultBookaway] = await Promise.all([
-        safeQuery(pools['12go'], query12go, params12go),
-        safeQuery(pools['bookaway'], queryBookaway, paramsBookaway)
-      ]);
-
-      console.log('12go results count:', result12go?.rows?.length || 0);
-      console.log('Bookaway results count:', resultBookaway?.rows?.length || 0);
-
-      const combinedResults = [
-        ...(result12go?.rows || []),
-        ...(resultBookaway?.rows || [])
-      ];
+      // Since both tables are in the same database, we can use either pool
+      const result = await safeQuery(pools['12go'], finalQuery, params);
+      console.log('Total results count:', result?.rows?.length || 0);
+      const combinedResults = result?.rows || [];
 
       console.log('Total combined results:', combinedResults.length);
 
