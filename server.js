@@ -839,6 +839,8 @@ app.get('/api/filters', async (req, res) => {
 
 // Combined trips query endpoint
 app.get('/api/combined-trips', async (req, res) => {
+  console.log('Received request with query params:', req.query);
+  
   const {
     origin,
     destination,
@@ -848,6 +850,9 @@ app.get('/api/combined-trips', async (req, res) => {
     start_date,
     end_date
   } = req.query;
+  
+  // Log the received timeline value for debugging
+  console.log('Timeline value received:', timeline);
 
   try {
     let query12go = `
