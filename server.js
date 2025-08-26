@@ -785,11 +785,122 @@ app.get('/api/filters', async (req, res) => {
     
     // Cache the response for 1 hour (3600000 ms)
     setInCache(cacheKey, response, 3600000);
-    
     res.json(response);
   } catch (error) {
     console.error('Error fetching filters:', error);
     res.status(500).json({ error: 'Failed to fetch filters' });
+  }
+});
+
+// Combined trips query endpoint
+app.get('/api/combined-trips', async (req, res) => {
+  const {
+    origin,
+    destination,
+    operator_name,
+    transport_type,
+    timeline,
+    start_date,
+    end_date
+  } = req.query;
+
+  try {
+    let query12go = `
+      SELECT '12go' as provider, * FROM trips 
+      WHERE 1=1
+    `;
+
+    let queryBookaway = `
+      SELECT 'bookaway' as provider, * FROM bookaway_trips 
+      WHERE 1=1
+    `;
+
+    const params = [];
+    let paramIndex = 1;
+
+    const addFilter = (field, value, query) => {
+      if (value) {
+        query += ` AND ${field} = $${paramIndex}`;
+        params.push(value);
+        paramIndex++;
+      }
+      return query;
+    };
+
+    query12go = addFilter('origin', origin, query12go);
+    query12go = addFilter('destination', destination, query12go);
+    query12go = addFilter('operator_name', operator_name, query12go);
+    query12go = addFilter('transport_type', transport_type, query12go);
+
+    queryBookaway = addFilter('origin', origin, queryBookaway);
+    queryBookaway = addFilter('destination', destination, queryBookaway);
+    queryBookaway = addFilter('operator_name', operator_name, queryBookaway);
+    queryBookaway = addFilter('transport_type', transport_type, queryBookaway);
+
+    if (timeline === 'Custom' && start_date && end_date) {
+      query12go += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      queryBookaway += ` AND travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`;
+      params.push(start_date, end_date);
+      paramIndex += 2;
+    } else if (timeline) {
+      let dateCondition = '';
+      switch (timeline) {
+        case 'Today':
+          dateCondition = 'travel_date = CURRENT_DATE';
+          break;
+        case 'Yesterday':
+          dateCondition = 'travel_date = CURRENT_DATE - INTERVAL \'1 day\'';
+          break;
+        case 'Last 7 Days':
+          dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'7 days\'';
+          break;
+        case 'Last 14 Days':
+          dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'14 days\'';
+          break;
+        case 'Last 28 Days':
+          dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'28 days\'';
+          break;
+        case 'Last 30 Days':
+          dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'30 days\'';
+          break;
+        case 'Last 90 Days':
+          dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'90 days\'';
+          break;
+        case 'This Month':
+          dateCondition = "travel_date >= date_trunc('month', CURRENT_DATE) AND travel_date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'"
+          break;
+        case 'This Year':
+          dateCondition = "travel_date >= date_trunc('year', CURRENT_DATE) AND travel_date < date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'"
+          break;
+      }
+      if (dateCondition) {
+        query12go += ` AND ${dateCondition}`;
+        queryBookaway += ` AND ${dateCondition}`;
+      }
+    }
+
+    const [result12go, resultBookaway] = await Promise.all([
+      safeQuery(pools['12go'], query12go, params),
+      safeQuery(pools['bookaway'], queryBookaway, params)
+    ]);
+
+    const combinedResults = [
+      ...(result12go.rows || []),
+      ...(resultBookaway.rows || [])
+    ];
+
+    res.json({
+      success: true,
+      data: combinedResults,
+      count: combinedResults.length
+    });
+
+  } catch (error) {
+    console.error('Error in combined trips query:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch combined trips data'
+    });
   }
 });
 
