@@ -839,7 +839,9 @@ app.get('/api/filters', async (req, res) => {
 
 // Combined trips query endpoint
 app.get('/api/combined-trips', async (req, res) => {
-  console.log('Received request with query params:', req.query);
+  console.log('=== Received request ===');
+  console.log('Full URL:', req.protocol + '://' + req.get('host') + req.originalUrl);
+  console.log('Query params:', JSON.stringify(req.query, null, 2));
   
   const {
     origin,
@@ -851,17 +853,53 @@ app.get('/api/combined-trips', async (req, res) => {
     end_date
   } = req.query;
   
-  // Log the received timeline value for debugging
-  console.log('Timeline value received:', timeline);
+  // Log the received parameters for debugging
+  console.log('Parsed parameters:');
+  console.log('- origin:', origin);
+  console.log('- destination:', destination);
+  console.log('- timeline:', timeline);
+  console.log('- transport_type:', transport_type);
+  console.log('- operator_name:', operator_name);
+  console.log('- start_date:', start_date);
+  console.log('- end_date:', end_date);
 
   try {
+    console.log('Building queries for combined trips...');
+    
+    // Get the list of columns that exist in both tables
     let query12go = `
-      SELECT '12go' as provider, * FROM trips 
+      SELECT 
+        '12go' as provider,
+        id,
+        origin,
+        destination,
+        departure_time,
+        arrival_time,
+        duration,
+        price,
+        transport_type,
+        operator_name,
+        travel_date,
+        created_at
+      FROM trips 
       WHERE 1=1
     `;
 
     let queryBookaway = `
-      SELECT 'bookaway' as provider, * FROM bookaway_trips 
+      SELECT 
+        'bookaway' as provider,
+        id,
+        origin,
+        destination,
+        departure_time,
+        arrival_time,
+        duration,
+        price,
+        transport_type,
+        operator_name,
+        travel_date,
+        created_at
+      FROM bookaway_trips 
       WHERE 1=1
     `;
 
@@ -893,33 +931,37 @@ app.get('/api/combined-trips', async (req, res) => {
       params.push(start_date, end_date);
       paramIndex += 2;
     } else if (timeline) {
+      // Normalize the timeline value (trim and lowercase for case-insensitive comparison)
+      const normalizedTimeline = timeline.trim().toLowerCase();
+      console.log('Normalized timeline:', normalizedTimeline);
+      
       let dateCondition = '';
-      switch (timeline) {
-        case 'Today':
+      switch (normalizedTimeline) {
+        case 'today':
           dateCondition = 'travel_date = CURRENT_DATE';
           break;
-        case 'Yesterday':
+        case 'yesterday':
           dateCondition = 'travel_date = CURRENT_DATE - INTERVAL \'1 day\'';
           break;
-        case 'Last 7 Days':
+        case 'last 7 days':
           dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'7 days\'';
           break;
-        case 'Last 14 Days':
+        case 'last 14 days':
           dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'14 days\'';
           break;
-        case 'Last 28 Days':
+        case 'last 28 days':
           dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'28 days\'';
           break;
-        case 'Last 30 Days':
+        case 'last 30 days':
           dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'30 days\'';
           break;
-        case 'Last 90 Days':
+        case 'last 90 days':
           dateCondition = 'travel_date >= CURRENT_DATE - INTERVAL \'90 days\'';
           break;
-        case 'This Month':
+        case 'this month':
           dateCondition = "travel_date >= date_trunc('month', CURRENT_DATE) AND travel_date < date_trunc('month', CURRENT_DATE) + INTERVAL '1 month'"
           break;
-        case 'This Year':
+        case 'this year':
           dateCondition = "travel_date >= date_trunc('year', CURRENT_DATE) AND travel_date < date_trunc('year', CURRENT_DATE) + INTERVAL '1 year'"
           break;
       }
@@ -929,21 +971,40 @@ app.get('/api/combined-trips', async (req, res) => {
       }
     }
 
-    const [result12go, resultBookaway] = await Promise.all([
-      safeQuery(pools['12go'], query12go, params),
-      safeQuery(pools['bookaway'], queryBookaway, params)
-    ]);
+    console.log('Executing queries...');
+    console.log('12go query:', query12go);
+    console.log('Bookaway query:', queryBookaway);
+    console.log('Query params:', params);
 
-    const combinedResults = [
-      ...(result12go.rows || []),
-      ...(resultBookaway.rows || [])
-    ];
+    try {
+      const [result12go, resultBookaway] = await Promise.all([
+        safeQuery(pools['12go'], query12go, params),
+        safeQuery(pools['bookaway'], queryBookaway, params)
+      ]);
 
-    res.json({
-      success: true,
-      data: combinedResults,
-      count: combinedResults.length
-    });
+      console.log('12go results count:', result12go?.rows?.length || 0);
+      console.log('Bookaway results count:', resultBookaway?.rows?.length || 0);
+
+      const combinedResults = [
+        ...(result12go?.rows || []),
+        ...(resultBookaway?.rows || [])
+      ];
+
+      console.log('Total combined results:', combinedResults.length);
+
+      res.json({
+        success: true,
+        data: combinedResults,
+        count: combinedResults.length
+      });
+    } catch (error) {
+      console.error('Error executing queries:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch trips',
+        details: error.message
+      });
+    }
 
   } catch (error) {
     console.error('Error in combined trips query:', error);
