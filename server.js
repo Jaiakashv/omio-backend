@@ -735,6 +735,51 @@ app.get('/api/filter/date', async (req, res) => {
   }
 });
 
+// Search filter options
+app.get('/api/filters/search', async (req, res) => {
+  const { field, query } = req.query;
+  
+  if (!field || !query) {
+    return res.status(400).json({ error: 'Field and query parameters are required' });
+  }
+
+  try {
+    const results = [];
+    const searchQuery = `%${query}%`;
+    
+    for (const [provider, pool] of Object.entries(pools)) {
+      const tableName = provider === 'bookaway' ? 'bookaway_trips' : 'trips';
+      let columnName;
+      
+      switch(field) {
+        case 'From': columnName = 'origin'; break;
+        case 'To': columnName = 'destination'; break;
+        case 'Transport Type': columnName = 'transport_type'; break;
+        case 'Operator': columnName = 'operator_name'; break;
+        default: continue;
+      }
+      
+      const result = await safeQuery(
+        pool,
+        `SELECT DISTINCT ${columnName} as value 
+         FROM ${tableName} 
+         WHERE ${columnName} ILIKE $1 
+         LIMIT 50`,
+        [searchQuery]
+      );
+      
+      results.push(...result.rows.map(row => row.value));
+    }
+    
+    // Remove duplicates and sort
+    const uniqueResults = [...new Set(results)].sort();
+    res.json({ success: true, data: uniqueResults });
+  } catch (error) {
+    console.error('Error searching filters:', error);
+    res.status(500).json({ success: false, error: 'Failed to search filters' });
+  }
+});
+
 // Get all available filters with caching
 app.get('/api/filters', async (req, res) => {
   const cacheKey = 'filters_data';
