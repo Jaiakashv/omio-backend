@@ -980,7 +980,7 @@ app.get('/api/combined-trips', async (req, res) => {
         query += ` WHERE ${conditions.join(' AND ')}`;
       }
 
-      const safeSortBy = ['departure_time', 'arrival_time', 'price', 'duration'].includes(sort_by) ? sort_by : 'departure_time';
+      const safeSortBy = ['departure_time', 'arrival_time', 'price_inr', 'duration_minutes'].includes(sort_by) ? sort_by : 'departure_time';
       const safeSortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'ASC';
       
       query += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
