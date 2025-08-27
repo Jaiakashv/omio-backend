@@ -934,8 +934,14 @@ app.get('/api/combined-trips', async (req, res) => {
         }
       }
 
-      // Add date filtering
-      if (timeline) {
+      // Add date filtering for travel_date
+      if (start_date && end_date) {
+        // If we have both start_date and end_date, use them for travel_date filtering
+        params.push(start_date, end_date);
+        conditions.push(`travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
+        paramIndex += 2;
+      } else if (timeline) {
+        // Otherwise, use the timeline presets
         switch (timeline.toLowerCase()) {
           case 'today':
             conditions.push(`travel_date = CURRENT_DATE`);
@@ -963,13 +969,6 @@ app.get('/api/combined-trips', async (req, res) => {
             break;
           case 'this year':
             conditions.push(`travel_date >= date_trunc('year', CURRENT_DATE)`);
-            break;
-          case 'custom':
-            if (start_date && end_date) {
-              params.push(start_date, end_date);
-              conditions.push(`travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
-              paramIndex += 2;
-            }
             break;
         }
       }
