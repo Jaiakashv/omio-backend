@@ -838,63 +838,101 @@ app.get('/api/filters', async (req, res) => {
 });
 
 // Combined trips endpoint with pagination, sorting, and caching
+// Server-side: In your Express.js file
 app.get('/api/combined-trips', async (req, res) => {
   try {
-    // Parse query parameters with defaults
-    const {
-      origin,
-      destination,
-      operator_name,
-      transport_type,
-      timeline,
-      start_date,
-      end_date,
-      page = '1',
-      limit = '50',
-      sort_by = 'departure_time',
-      sort_order = 'ASC'
+    const { 
+      origin, 
+      destination, 
+      operator_name, 
+      transport_type, 
+      timeline, 
+      start_date, 
+      end_date, 
+      travel_date,
+      page = '1', 
+      limit = '50', 
+      sort_by = 'departure_time', 
+      sort_order = 'ASC' 
     } = req.query;
 
     const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit))); // Cap at 100 items per page
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
     const offset = (pageNum - 1) * limitNum;
 
-    // Create a cache key based on all query parameters
+    // Correctly parse comma-separated string into an array
+    const origins = origin ? origin.split(',') : [];
+    const destinations = destination ? destination.split(',') : [];
+    const transportTypes = transport_type ? transport_type.split(',') : [];
+    const operatorNames = operator_name ? operator_name.split(',') : [];
+
     const cacheKey = `combined_trips_${JSON.stringify({
-      origin, destination, operator_name, transport_type, 
-      timeline, start_date, end_date, pageNum, limitNum,
-      sort_by, sort_order
+      origins, 
+      destinations, 
+      operatorNames, 
+      transportTypes, 
+      timeline, 
+      start_date, 
+      end_date, 
+      travel_date,
+      pageNum, 
+      limitNum,
+      sort_by, 
+      sort_order
     })}`;
 
-    // Try to get from cache first
     const cachedResult = getFromCache(cacheKey);
     if (cachedResult) {
       console.log('✅ Serving from cache:', cacheKey);
       return res.json(cachedResult);
     }
 
-    // Build dynamic queries for both providers with pagination and sorting
     const buildQuery = (tableName) => {
       const params = [];
       const conditions = [];
+      let paramIndex = 1;
 
-      // Add filter conditions with parameterized queries
-      [
-        { field: 'origin', value: origin, exact: true },
-        { field: 'destination', value: destination, exact: true },
-        { field: 'operator_name', value: operator_name, exact: false },
-        { field: 'transport_type', value: transport_type, exact: true }
-      ].forEach(({ field, value, exact }) => {
-        if (value) {
-          if (exact) {
-            params.push(value);
-            conditions.push(`${field} = $${params.length}`);
-          } else {
-            params.push(`%${value}%`);
-            conditions.push(`${field} ILIKE $${params.length}`);
-          }
+      // Use IN clause for multiple exact matches
+      if (origins.length > 0) {
+        const placeholders = origins.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...origins);
+        conditions.push(`(${tableName === 'trips' ? 'origin' : 'from_location'} IN (${placeholders}))`);
+        paramIndex += origins.length;
+      }
+      
+      if (destinations.length > 0) {
+        const placeholders = destinations.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...destinations);
+        conditions.push(`(${tableName === 'trips' ? 'destination' : 'to_location'} IN (${placeholders}))`);
+        paramIndex += destinations.length;
+      }
+
+      if (transportTypes.length > 0) {
+        const placeholders = transportTypes.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...transportTypes);
+        conditions.push(`(transport_type IN (${placeholders}))`);
+        paramIndex += transportTypes.length;
+      }
+
+      if (operatorNames.length > 0) {
+        const placeholders = operatorNames.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...operatorNames);
+        conditions.push(`(operator_name IN (${placeholders}))`);
+        paramIndex += operatorNames.length;
+      }
+
+      // Add other conditions with careful parameter index management
+      if (travel_date) {
+        try {
+          const [day, month, year] = travel_date.split('-');
+          const formattedDate = `${year}-${month}-${day}`;
+          params.push(formattedDate);
+          conditions.push(`DATE(travel_date) = $${paramIndex}`);
+          paramIndex++;
+        } catch (error) {
+          console.error('Error parsing travel date:', error);
         }
-      });
+      }
 
       // Add date filtering
       if (timeline) {
@@ -911,6 +949,15 @@ app.get('/api/combined-trips', async (req, res) => {
           case 'last 14 days':
             conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '14 days'`);
             break;
+          case 'last 28 days':
+            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '28 days'`);
+            break;
+          case 'last 30 days':
+            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '30 days'`);
+            break;
+          case 'last 90 days':
+            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '90 days'`);
+            break;
           case 'this month':
             conditions.push(`travel_date >= date_trunc('month', CURRENT_DATE)`);
             break;
@@ -920,42 +967,30 @@ app.get('/api/combined-trips', async (req, res) => {
           case 'custom':
             if (start_date && end_date) {
               params.push(start_date, end_date);
-              conditions.push(`travel_date BETWEEN $${params.length - 1} AND $${params.length}`);
+              conditions.push(`travel_date BETWEEN $${paramIndex} AND $${paramIndex + 1}`);
+              paramIndex += 2;
             }
             break;
         }
       }
 
-      // Base query with conditions
-      let query = `
-        SELECT *, 
-        (SELECT COUNT(*) FROM ${tableName} ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}) as total_count
-        FROM ${tableName}
-      `;
+      let query = `SELECT *, (SELECT COUNT(*) FROM ${tableName} ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}) as total_count FROM ${tableName}`;
 
-      // Add WHERE clause if there are conditions
       if (conditions.length > 0) {
         query += ` WHERE ${conditions.join(' AND ')}`;
       }
 
-      // Add sorting
-      const safeSortBy = ['departure_time', 'arrival_time', 'price'].includes(sort_by) 
-        ? sort_by 
-        : 'departure_time';
-      const safeSortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) 
-        ? sort_order.toUpperCase() 
-        : 'ASC';
+      const safeSortBy = ['departure_time', 'arrival_time', 'price', 'duration'].includes(sort_by) ? sort_by : 'departure_time';
+      const safeSortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'ASC';
       
       query += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
       
-      // Add pagination
       params.push(limitNum, offset);
-      query += ` LIMIT $${params.length - 1} OFFSET $${params.length}`;
+      query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
       
       return { query, params };
     };
 
-    // Build queries with table-specific configurations
     const twelveGoQuery = buildQuery('trips');
     const bookawayQuery = buildQuery('bookaway_trips');
     
@@ -964,7 +999,6 @@ app.get('/api/combined-trips', async (req, res) => {
     console.log('Bookaway Query:', bookawayQuery.query);
     console.log('Bookaway Params:', bookawayQuery.params);
 
-    // Execute queries in parallel with timeout and better error handling
     let result12go = [];
     let resultBookaway = [];
     
@@ -987,31 +1021,20 @@ app.get('/api/combined-trips', async (req, res) => {
       console.error('Error executing parallel queries:', error);
     }
 
-    console.log('12go Results:', result12go?.length || 0, 'items');
-    console.log('Bookaway Results:', resultBookaway?.length || 0, 'items');
-
-    // Process results
     const processResults = (results, source) => {
-      console.log(`Processing ${source} results:`, results?.length || 0, 'items');
       if (!results || results.length === 0) {
-        console.log(`No results from ${source}`);
         return { items: [], total: 0 };
       }
       const processed = {
-        items: results.map(({ total_count, ...rest }) => rest), // Remove total_count from items
+        items: results.map(({ total_count, ...rest }) => rest),
         total: results[0]?.total_count || 0
       };
-      console.log(`Processed ${source}:`, processed.items.length, 'items, total:', processed.total);
       return processed;
     };
 
     const twelveGoData = processResults(result12go, '12go');
     const bookawayData = processResults(resultBookaway, 'bookaway');
     
-    console.log('12go Data:', twelveGoData.items.length, 'items');
-    console.log('Bookaway Data:', bookawayData.items.length, 'items');
-
-    // Combine results
     const combinedResults = {
       data: [...twelveGoData.items, ...bookawayData.items],
       pagination: {
@@ -1022,7 +1045,6 @@ app.get('/api/combined-trips', async (req, res) => {
       }
     };
 
-    // Cache the result for 1 minute (adjust as needed)
     setInCache(cacheKey, combinedResults, 60000);
     
     res.json({
@@ -1039,7 +1061,6 @@ app.get('/api/combined-trips', async (req, res) => {
     });
   }
 });
-
 
 const server = app.listen(port, () => {
   console.log(`🚀 Server v2 running on port ${port}`);
