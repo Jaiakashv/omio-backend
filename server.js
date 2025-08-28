@@ -916,8 +916,19 @@ app.get('/api/combined-trips', async (req, res) => {
           if (Array.isArray(queryConditions)) {
             queryConditions.forEach(condition => {
               if (condition.field && condition.operator && condition.value !== undefined) {
+                // Special handling for time fields
+                if (['departure_time', 'arrival_time'].includes(condition.field)) {
+                  // For time fields, we need to handle time comparison
+                  const timeValue = condition.value;
+                  if (timeValue) {
+                    // Format: 'HH:MM:SS' to 'HH:MM:SS' for proper time comparison
+                    conditions.push(`(${condition.field}::time ${condition.operator} $${paramIndex}::time)`);
+                    params.push(timeValue);
+                    paramIndex++;
+                  }
+                }
                 // Special handling for price_inr filtering
-                if (condition.field === 'price_inr') {
+                else if (condition.field === 'price_inr') {
                   // Convert value to number for numeric comparison
                   const priceValue = parseFloat(condition.value);
                   if (!isNaN(priceValue)) {
