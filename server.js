@@ -850,11 +850,21 @@ app.get('/api/combined-trips', async (req, res) => {
       start_date, 
       end_date, 
       travel_date,
+      provider, // Added provider parameter
       page = '1', 
       limit = '50', 
       sort_by = 'departure_time', 
       sort_order = 'ASC' 
     } = req.query;
+
+    // Parse provider filter
+    const providers = provider ? provider.split(',').map(p => p.trim().toLowerCase()) : ['12go', 'bookaway'];
+    const validProviders = ['12go', 'bookaway'];
+    const selectedProviders = providers.filter(p => validProviders.includes(p));
+    
+    if (selectedProviders.length === 0) {
+      return res.status(400).json({ error: 'Invalid provider. Use either "12go", "bookaway", or both' });
+    }
 
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
@@ -875,6 +885,7 @@ app.get('/api/combined-trips', async (req, res) => {
       start_date, 
       end_date, 
       travel_date,
+      providers: selectedProviders, // Include selected providers in cache key
       pageNum, 
       limitNum,
       sort_by, 
@@ -896,14 +907,14 @@ app.get('/api/combined-trips', async (req, res) => {
       if (origins.length > 0) {
         const placeholders = origins.map((_, i) => `$${paramIndex + i}`).join(',');
         params.push(...origins);
-        conditions.push(`(${tableName === 'trips' ? 'origin' : 'from_location'} IN (${placeholders}))`);
+        conditions.push(`(origin IN (${placeholders}))`);
         paramIndex += origins.length;
       }
       
       if (destinations.length > 0) {
         const placeholders = destinations.map((_, i) => `$${paramIndex + i}`).join(',');
         params.push(...destinations);
-        conditions.push(`(${tableName === 'trips' ? 'destination' : 'to_location'} IN (${placeholders}))`);
+        conditions.push(`(destination IN (${placeholders}))`);
         paramIndex += destinations.length;
       }
 
@@ -944,111 +955,130 @@ app.get('/api/combined-trips', async (req, res) => {
         // Otherwise, use the timeline presets
         switch (timeline.toLowerCase()) {
           case 'today':
-            conditions.push(`travel_date = CURRENT_DATE`);
+            conditions.push(`DATE(travel_date) = CURRENT_DATE`);
             break;
-          case 'yesterday':
-            conditions.push(`travel_date = CURRENT_DATE - INTERVAL '1 day'`);
+          case 'tomorrow':
+            conditions.push(`DATE(travel_date) = (CURRENT_DATE + INTERVAL '1 day')`);
             break;
-          case 'last 7 days':
-            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '7 days'`);
+          case 'next 7 days':
+            conditions.push(`travel_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '7 days')`);
             break;
-          case 'last 14 days':
-            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '14 days'`);
-            break;
-          case 'last 28 days':
-            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '28 days'`);
-            break;
-          case 'last 30 days':
-            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '30 days'`);
-            break;
-          case 'last 90 days':
-            conditions.push(`travel_date >= CURRENT_DATE - INTERVAL '90 days'`);
+          case 'next 14 days':
+            conditions.push(`travel_date BETWEEN CURRENT_DATE AND (CURRENT_DATE + INTERVAL '14 days')`);
             break;
           case 'this month':
-            conditions.push(`travel_date >= date_trunc('month', CURRENT_DATE)`);
+            conditions.push(`travel_date BETWEEN date_trunc('month', CURRENT_DATE) 
+                               AND (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month' - INTERVAL '1 day')`);
+            break;
+          case 'next month':
+            conditions.push(`travel_date BETWEEN (date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')
+                               AND (date_trunc('month', CURRENT_DATE) + INTERVAL '2 months' - INTERVAL '1 day')`);
             break;
           case 'this year':
-            conditions.push(`travel_date >= date_trunc('year', CURRENT_DATE)`);
+            conditions.push(`travel_date BETWEEN date_trunc('year', CURRENT_DATE)
+                               AND (date_trunc('year', CURRENT_DATE) + INTERVAL '1 year' - INTERVAL '1 day')`);
             break;
         }
       }
 
-      let query = `SELECT *, (SELECT COUNT(*) FROM ${tableName} ${conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : ''}) as total_count FROM ${tableName}`;
-
+      // First, build the count query
+      let countQuery = `SELECT COUNT(*) as total_count FROM ${tableName}`;
       if (conditions.length > 0) {
-        query += ` WHERE ${conditions.join(' AND ')}`;
+        countQuery += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      // Then build the data query
+      let dataQuery = `SELECT * FROM ${tableName}`;
+      if (conditions.length > 0) {
+        dataQuery += ` WHERE ${conditions.join(' AND ')}`;
       }
 
       const safeSortBy = ['departure_time', 'arrival_time', 'price_inr', 'duration_minutes'].includes(sort_by) ? sort_by : 'departure_time';
       const safeSortOrder = ['ASC', 'DESC'].includes(sort_order.toUpperCase()) ? sort_order.toUpperCase() : 'ASC';
       
-      query += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
+      dataQuery += ` ORDER BY ${safeSortBy} ${safeSortOrder}`;
       
+      // Add pagination to data query only
+      dataQuery += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
       params.push(limitNum, offset);
-      query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-      
-      return { query, params };
+
+      // Return both queries - we'll need to run them separately
+      return { countQuery, dataQuery, params };
     };
 
-    const twelveGoQuery = buildQuery('trips');
-    const bookawayQuery = buildQuery('bookaway_trips');
-    
-    console.log('12go Query:', twelveGoQuery.query);
-    console.log('12go Params:', twelveGoQuery.params);
-    console.log('Bookaway Query:', bookawayQuery.query);
-    console.log('Bookaway Params:', bookawayQuery.params);
-
-    let result12go = [];
-    let resultBookaway = [];
-    
-    try {
-      [result12go, resultBookaway] = await Promise.all([
-        pools['12go'].query(twelveGoQuery.query, twelveGoQuery.params)
-          .then(res => res.rows)
-          .catch(err => {
-            console.error('12go Query Error:', err);
-            return [];
-          }),
-        pools['bookaway'].query(bookawayQuery.query, bookawayQuery.params)
-          .then(res => res.rows)
-          .catch(err => {
-            console.error('Bookaway Query Error:', err);
-            return [];
-          })
-      ]);
-    } catch (error) {
-      console.error('Error executing parallel queries:', error);
+    // Only build queries for selected providers
+    const queries = [];
+    if (selectedProviders.includes('12go')) {
+      queries.push({
+        query: buildQuery('trips'),
+        provider: '12go'
+      });
     }
+    if (selectedProviders.includes('bookaway')) {
+      queries.push({
+        query: buildQuery('bookaway_trips'),
+        provider: 'bookaway'
+      });
+    }
+    
+    // Execute queries in parallel for selected providers
+    const queryPromises = queries.map(async ({ query, provider }) => {
+      console.log(`${provider} Count Query:`, query.countQuery);
+      console.log(`${provider} Data Query:`, query.dataQuery);
+      console.log(`${provider} Params:`, query.params);
+      
+      // Execute both count and data queries in parallel
+      const [countResult, dataResult] = await Promise.all([
+        safeQuery(pools[provider], query.countQuery, query.params.slice(0, -2)), // Exclude limit/offset for count
+        safeQuery(pools[provider], query.dataQuery, query.params)
+      ]);
+      
+      return {
+        data: dataResult || [],
+        total: countResult && countResult[0] ? parseInt(countResult[0].total_count) : 0,
+        provider
+      };
+    });
 
-    const processResults = (results, source) => {
-      if (!results || results.length === 0) {
+    const results = await Promise.all(queryPromises);
+
+    const processResults = (result) => {
+      if (!result || result.data.length === 0) {
         return { items: [], total: 0 };
       }
-      const processed = {
-        items: results.map(({ total_count, ...rest }) => rest),
-        total: results[0]?.total_count || 0
+      return {
+        items: result.data,
+        total: result.total
       };
-      return processed;
     };
 
-    const twelveGoData = processResults(result12go, '12go');
-    const bookawayData = processResults(resultBookaway, 'bookaway');
+    // Process results from all selected providers
+    const allResults = [];
+    let totalCount = 0;
     
-    const combinedResults = {
-      data: [...twelveGoData.items, ...bookawayData.items],
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total: (twelveGoData.total || 0) + (bookawayData.total || 0),
-        totalPages: Math.ceil(((twelveGoData.total || 0) + (bookawayData.total || 0)) / limitNum)
+    results.forEach((result) => {
+      const processed = processResults(result);
+      if (processed && processed.items && processed.items.length > 0) {
+        allResults.push(...processed.items);
+        totalCount += processed.total;
       }
-    };
+    });
 
-    setInCache(cacheKey, combinedResults, 60000);
-    
+    // Sort all results
+    allResults.sort((a, b) => {
+      const aTime = new Date(a.departure_time);
+      const bTime = new Date(b.departure_time);
+      return sort_order === 'ASC' ? aTime - bTime : bTime - aTime;
+    });
+
+    // Send the response with pagination info
     res.json({
       success: true,
-      ...combinedResults
+      data: allResults,
+      total: totalCount,
+      page: parseInt(page),
+      limit: limitNum,
+      totalPages: Math.ceil(totalCount / limitNum)
     });
 
   } catch (error) {
