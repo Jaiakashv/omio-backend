@@ -908,6 +908,37 @@ app.get('/api/combined-trips', async (req, res) => {
       const params = [];
       const conditions = [];
       let paramIndex = 1;
+      
+      // Process custom query conditions if present
+      if (req.query.query_conditions) {
+        try {
+          const queryConditions = JSON.parse(req.query.query_conditions);
+          if (Array.isArray(queryConditions)) {
+            queryConditions.forEach(condition => {
+              if (condition.field && condition.operator && condition.value !== undefined) {
+                // Special handling for price_inr filtering
+                if (condition.field === 'price_inr') {
+                  // Convert value to number for numeric comparison
+                  const priceValue = parseFloat(condition.value);
+                  if (!isNaN(priceValue)) {
+                    conditions.push(`price_inr ${condition.operator} $${paramIndex}`);
+                    params.push(priceValue);
+                    paramIndex++;
+                  }
+                } else {
+                  // Generic condition handling for other fields
+                  conditions.push(`${condition.field} ${condition.operator} $${paramIndex}`);
+                  // Handle LIKE operator for text search
+                  params.push(condition.operator === 'LIKE' ? `%${condition.value}%` : condition.value);
+                  paramIndex++;
+                }
+              }
+            });
+          }
+        } catch (error) {
+          console.error('Error parsing query_conditions:', error);
+        }
+      }
 
       // Determine which parameters to use (new names take precedence over old names)
       const effectiveOrigins = origins.length > 0 ? origins : (req.query.from ? [req.query.from] : []);
