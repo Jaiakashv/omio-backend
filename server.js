@@ -233,7 +233,10 @@ async function getHighestPrice(pool, tableName, params, conditions) {
 
 // Get highest price from all providers
 app.get('/api/metrics/highest-price', async (req, res) => {
-  const { from, to, transportType } = req.query;
+  // Support both old and new parameter names
+  const from = req.query.origin || req.query.from;
+  const to = req.query.destination || req.query.to;
+  const transportType = req.query.transport_type || req.query.transportType;
   const timestamp = new Date().toISOString();
   
   try {
@@ -399,7 +402,10 @@ async function getUniqueProviders(pool, tableName, params, conditions) {
 
 // Get unique providers count from all providers
 app.get('/api/metrics/unique-providers', async (req, res) => {
-  const { from, to, transportType } = req.query;
+  // Support both old and new parameter names
+  const from = req.query.origin || req.query.from;
+  const to = req.query.destination || req.query.to;
+  const transportType = req.query.transport_type || req.query.transportType;
   const timestamp = new Date().toISOString();
   
   try {
@@ -903,19 +909,23 @@ app.get('/api/combined-trips', async (req, res) => {
       const conditions = [];
       let paramIndex = 1;
 
+      // Determine which parameters to use (new names take precedence over old names)
+      const effectiveOrigins = origins.length > 0 ? origins : (req.query.from ? [req.query.from] : []);
+      const effectiveDestinations = destinations.length > 0 ? destinations : (req.query.to ? [req.query.to] : []);
+
       // Use IN clause for multiple exact matches
-      if (origins.length > 0) {
-        const placeholders = origins.map((_, i) => `$${paramIndex + i}`).join(',');
-        params.push(...origins);
+      if (effectiveOrigins.length > 0) {
+        const placeholders = effectiveOrigins.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...effectiveOrigins);
         conditions.push(`(origin IN (${placeholders}))`);
-        paramIndex += origins.length;
+        paramIndex += effectiveOrigins.length;
       }
       
-      if (destinations.length > 0) {
-        const placeholders = destinations.map((_, i) => `$${paramIndex + i}`).join(',');
-        params.push(...destinations);
+      if (effectiveDestinations.length > 0) {
+        const placeholders = effectiveDestinations.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...effectiveDestinations);
         conditions.push(`(destination IN (${placeholders}))`);
-        paramIndex += destinations.length;
+        paramIndex += effectiveDestinations.length;
       }
 
       if (transportTypes.length > 0) {
@@ -1027,17 +1037,36 @@ app.get('/api/combined-trips', async (req, res) => {
       console.log(`${provider} Data Query:`, query.dataQuery);
       console.log(`${provider} Params:`, query.params);
       
-      // Execute both count and data queries in parallel
-      const [countResult, dataResult] = await Promise.all([
-        safeQuery(pools[provider], query.countQuery, query.params.slice(0, -2)), // Exclude limit/offset for count
-        safeQuery(pools[provider], query.dataQuery, query.params)
-      ]);
-      
-      return {
-        data: dataResult || [],
-        total: countResult && countResult[0] ? parseInt(countResult[0].total_count) : 0,
-        provider
-      };
+      try {
+        // Log pool connection status
+        console.log(`${provider} Pool connection status:`, {
+          totalCount: pools[provider].totalCount,
+          idleCount: pools[provider].idleCount,
+          waitingCount: pools[provider].waitingCount
+        });
+        
+        // Execute both count and data queries in parallel
+        const [countResult, dataResult] = await Promise.all([
+          safeQuery(pools[provider], query.countQuery, query.params.slice(0, -2)), // Exclude limit/offset for count
+          safeQuery(pools[provider], query.dataQuery, query.params)
+        ]);
+        
+        console.log(`${provider} Count Result:`, countResult);
+        
+        return {
+          data: dataResult || [],
+          total: countResult && countResult[0] ? parseInt(countResult[0].total_count) : 0,
+          provider
+        };
+      } catch (error) {
+        console.error(`Error executing ${provider} query:`, error);
+        return {
+          data: [],
+          total: 0,
+          provider,
+          error: error.message
+        };
+      }
     });
 
     const results = await Promise.all(queryPromises);
