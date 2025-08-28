@@ -140,6 +140,59 @@ const safeQuery = async (pool, query, params = []) => {
   }
 };
 
+// Get popular routes from all providers
+app.get('/api/popular', async (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  
+  try {
+    const results = [];
+    
+    // Process each provider
+    for (const [provider, pool] of Object.entries(pools)) {
+      const tableName = provider === '12go' ? 'trips' : 'bookaway_trips';
+      
+      const query = `
+        SELECT
+          CONCAT(origin, ' -- ', destination) AS route_name,
+          COUNT(*) AS total_trips,
+          $1 as provider
+        FROM
+          ${tableName}
+        GROUP BY
+          origin, destination
+        ORDER BY
+          total_trips DESC
+        LIMIT $2;
+      `;
+      
+      try {
+        const rows = await safeQuery(pool, query, [provider, limit]);
+        if (Array.isArray(rows)) {
+          results.push(...rows);
+        }
+      } catch (error) {
+        console.error(`Error fetching popular routes from ${provider}:`, error);
+        // Continue with other providers even if one fails
+        continue;
+      }
+    }
+    
+    // Sort combined results by total_trips
+    results.sort((a, b) => b.total_trips - a.total_trips);
+    
+    // Return top N results
+    res.json(results.slice(0, limit));
+    
+  } catch (error) {
+    console.error('Error in popular routes endpoint:', error);
+    res.status(500).json({ 
+      error: 'Internal server error', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
