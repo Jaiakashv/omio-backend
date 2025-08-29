@@ -140,59 +140,6 @@ const safeQuery = async (pool, query, params = []) => {
   }
 };
 
-// Get popular routes from all providers
-app.get('/api/popular', async (req, res) => {
-  const limit = parseInt(req.query.limit) || 10;
-  
-  try {
-    const results = [];
-    
-    // Process each provider
-    for (const [provider, pool] of Object.entries(pools)) {
-      const tableName = provider === '12go' ? 'trips' : 'bookaway_trips';
-      
-      const query = `
-        SELECT
-          CONCAT(origin, ' -- ', destination) AS route_name,
-          COUNT(*) AS total_trips,
-          $1 as provider
-        FROM
-          ${tableName}
-        GROUP BY
-          origin, destination
-        ORDER BY
-          total_trips DESC
-        LIMIT $2;
-      `;
-      
-      try {
-        const rows = await safeQuery(pool, query, [provider, limit]);
-        if (Array.isArray(rows)) {
-          results.push(...rows);
-        }
-      } catch (error) {
-        console.error(`Error fetching popular routes from ${provider}:`, error);
-        // Continue with other providers even if one fails
-        continue;
-      }
-    }
-    
-    // Sort combined results by total_trips
-    results.sort((a, b) => b.total_trips - a.total_trips);
-    
-    // Return top N results
-    res.json(results.slice(0, limit));
-    
-  } catch (error) {
-    console.error('Error in popular routes endpoint:', error);
-    res.status(500).json({ 
-      error: 'Internal server error', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -286,10 +233,7 @@ async function getHighestPrice(pool, tableName, params, conditions) {
 
 // Get highest price from all providers
 app.get('/api/metrics/highest-price', async (req, res) => {
-  // Support both old and new parameter names
-  const from = req.query.origin || req.query.from;
-  const to = req.query.destination || req.query.to;
-  const transportType = req.query.transport_type || req.query.transportType;
+  const { from, to, transportType } = req.query;
   const timestamp = new Date().toISOString();
   
   try {
@@ -379,24 +323,21 @@ app.get('/api/metrics/lowest-price', async (req, res) => {
 
 // Get unique routes count for all providers
 app.get('/api/metrics/unique-routes', async (req, res) => {
-  // Support both origin/destination and from/to parameters, with origin/destination taking precedence
-  const origin = req.query.origin || req.query.from;
-  const destination = req.query.destination || req.query.to;
-  const transportType = req.query.transportType;
+  const { from, to, transportType } = req.query;
   const timestamp = new Date().toISOString();
   
   try {
     const params = [];
     const conditions = [];
     
-    if (origin) {
+    if (from) {
       conditions.push(`LOWER(origin) = LOWER($${params.length + 1})`);
-      params.push(origin);
+      params.push(from);
     }
     
-    if (destination) {
+    if (to) {
       conditions.push(`LOWER(destination) = LOWER($${params.length + 1})`);
-      params.push(destination);
+      params.push(to);
     }
     
     if (transportType) {
@@ -458,10 +399,7 @@ async function getUniqueProviders(pool, tableName, params, conditions) {
 
 // Get unique providers count from all providers
 app.get('/api/metrics/unique-providers', async (req, res) => {
-  // Support both old and new parameter names
-  const from = req.query.origin || req.query.from;
-  const to = req.query.destination || req.query.to;
-  const transportType = req.query.transport_type || req.query.transportType;
+  const { from, to, transportType } = req.query;
   const timestamp = new Date().toISOString();
   
   try {
@@ -964,66 +902,20 @@ app.get('/api/combined-trips', async (req, res) => {
       const params = [];
       const conditions = [];
       let paramIndex = 1;
-      
-      // Process custom query conditions if present
-      if (req.query.query_conditions) {
-        try {
-          const queryConditions = JSON.parse(req.query.query_conditions);
-          if (Array.isArray(queryConditions)) {
-            queryConditions.forEach(condition => {
-              if (condition.field && condition.operator && condition.value !== undefined) {
-                // Special handling for time fields
-                if (['departure_time', 'arrival_time'].includes(condition.field)) {
-                  // For time fields, we need to handle time comparison
-                  const timeValue = condition.value;
-                  if (timeValue) {
-                    // Format: 'HH:MM:SS' to 'HH:MM:SS' for proper time comparison
-                    conditions.push(`(${condition.field}::time ${condition.operator} $${paramIndex}::time)`);
-                    params.push(timeValue);
-                    paramIndex++;
-                  }
-                }
-                // Special handling for price_inr filtering
-                else if (condition.field === 'price_inr') {
-                  // Convert value to number for numeric comparison
-                  const priceValue = parseFloat(condition.value);
-                  if (!isNaN(priceValue)) {
-                    conditions.push(`price_inr ${condition.operator} $${paramIndex}`);
-                    params.push(priceValue);
-                    paramIndex++;
-                  }
-                } else {
-                  // Generic condition handling for other fields
-                  conditions.push(`${condition.field} ${condition.operator} $${paramIndex}`);
-                  // Handle LIKE operator for text search
-                  params.push(condition.operator === 'LIKE' ? `%${condition.value}%` : condition.value);
-                  paramIndex++;
-                }
-              }
-            });
-          }
-        } catch (error) {
-          console.error('Error parsing query_conditions:', error);
-        }
-      }
-
-      // Determine which parameters to use (new names take precedence over old names)
-      const effectiveOrigins = origins.length > 0 ? origins : (req.query.from ? [req.query.from] : []);
-      const effectiveDestinations = destinations.length > 0 ? destinations : (req.query.to ? [req.query.to] : []);
 
       // Use IN clause for multiple exact matches
-      if (effectiveOrigins.length > 0) {
-        const placeholders = effectiveOrigins.map((_, i) => `$${paramIndex + i}`).join(',');
-        params.push(...effectiveOrigins);
+      if (origins.length > 0) {
+        const placeholders = origins.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...origins);
         conditions.push(`(origin IN (${placeholders}))`);
-        paramIndex += effectiveOrigins.length;
+        paramIndex += origins.length;
       }
       
-      if (effectiveDestinations.length > 0) {
-        const placeholders = effectiveDestinations.map((_, i) => `$${paramIndex + i}`).join(',');
-        params.push(...effectiveDestinations);
+      if (destinations.length > 0) {
+        const placeholders = destinations.map((_, i) => `$${paramIndex + i}`).join(',');
+        params.push(...destinations);
         conditions.push(`(destination IN (${placeholders}))`);
-        paramIndex += effectiveDestinations.length;
+        paramIndex += destinations.length;
       }
 
       if (transportTypes.length > 0) {
@@ -1150,6 +1042,7 @@ app.get('/api/combined-trips', async (req, res) => {
         ]);
         
         console.log(`${provider} Count Result:`, countResult);
+        console.log(`${provider} Data Result:`, dataResult);
         
         return {
           data: dataResult || [],
