@@ -379,21 +379,24 @@ app.get('/api/metrics/lowest-price', async (req, res) => {
 
 // Get unique routes count for all providers
 app.get('/api/metrics/unique-routes', async (req, res) => {
-  const { from, to, transportType } = req.query;
+  // Support both origin/destination and from/to parameters, with origin/destination taking precedence
+  const origin = req.query.origin || req.query.from;
+  const destination = req.query.destination || req.query.to;
+  const transportType = req.query.transportType;
   const timestamp = new Date().toISOString();
   
   try {
     const params = [];
     const conditions = [];
     
-    if (from) {
+    if (origin) {
       conditions.push(`LOWER(origin) = LOWER($${params.length + 1})`);
-      params.push(from);
+      params.push(origin);
     }
     
-    if (to) {
+    if (destination) {
       conditions.push(`LOWER(destination) = LOWER($${params.length + 1})`);
-      params.push(to);
+      params.push(destination);
     }
     
     if (transportType) {
